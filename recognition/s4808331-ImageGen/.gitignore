@@ -1,0 +1,30 @@
+# Datasets: never commit patient scans
+data/
+*.nii
+*.nii.gz
+*.npy
+*.npz
+
+# Model weights and checkpoints
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+
+# Training and evaluation output (copy figures for the README into assets/)
+outputs/
+runs/
+logs/
+wandb/
+
+# Python and environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# OS and editor files
+.DS_Store
+.vscode/
+.idea/
