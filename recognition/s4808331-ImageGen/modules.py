@@ -54,7 +54,14 @@ def seed_size(image_size: tuple[int, int] = IMAGE_SIZE, n_blocks: int = N_BLOCKS
     ``n_blocks`` times. Raises if that does not divide evenly, which would
     otherwise surface as a confusing shape mismatch deep in the network.
     """
-    ...
+    height, width = image_size
+    factor = 2**n_blocks
+    if height % factor or width % factor: #guardrail for invalid sizes
+        raise ValueError(
+            f"image_size {image_size} is not divisible by 2**{n_blocks} = {factor}; "
+            "choose a different size or number of blocks."
+        )
+    return height // factor, width // factor
 
 
 def weights_init(module: nn.Module) -> None:
@@ -67,12 +74,24 @@ def weights_init(module: nn.Module) -> None:
 
     Apply with ``model.apply(weights_init)``.
     """
-    ...
+    name = module.__class__.__name__
+    if isinstance(module, (nn.Conv2d, nn.ConvTranspose2d)):
+        nn.init.normal_(module.weight, 0.0, 0.02)
+        if module.bias is not None:
+            nn.init.constant_(module.bias, 0.0)
+    elif isinstance(module, (nn.BatchNorm2d, nn.GroupNorm, nn.InstanceNorm2d)) and "Norm" in name:
+        if module.weight is not None:
+            nn.init.normal_(module.weight, 1.0, 0.02)
+        if module.bias is not None:
+            nn.init.constant_(module.bias, 0.0)
 
 
 def count_parameters(model: nn.Module, trainable_only: bool = True) -> int:
     """Count parameters, for the resource table in the report."""
-    ...
+    params = model.parameters()
+    if trainable_only:
+        params = (p for p in model.parameters() if p.requires_grad)
+    return sum(p.numel() for p in params)
 
 
 def _critic_norm(kind: str, channels: int) -> nn.Module:
@@ -86,7 +105,13 @@ def _critic_norm(kind: str, channels: int) -> nn.Module:
     which normalises over channels and space without needing the spatial size
     declared up front.
     """
-    ...
+    if kind == "layer":
+        return nn.GroupNorm(1, channels)
+    if kind == "instance":
+        return nn.InstanceNorm2d(channels, affine=True)
+    if kind == "none":
+        return nn.Identity()
+    raise ValueError(f"Unknown critic norm {kind!r}; expected 'layer', 'instance' or 'none'.")
 
 
 # ---------------------------------------------------------------------------
@@ -128,19 +153,66 @@ class Generator(nn.Module):
         n_blocks: int = N_BLOCKS,
         upsample: str = "transpose",
     ) -> None:
-        ...
+        super().__init__()
+        if upsample not in {"transpose", "nearest"}:
+            raise ValueError(f"Unknown upsample mode {upsample!r}; expected 'transpose' or 'nearest'.")
+
+        self.latent_dim = latent_dim
+        self.image_size = image_size
+        self.seed = seed_size(image_size, n_blocks)
+        self.upsample = upsample
+
+        # Channel schedule, widest first: e.g. 512 -> 256 -> 128 -> 64.
+        channels = [base_channels * 2**i for i in reversed(range(n_blocks))]
+
+        # Project the latent vector straight onto the seed feature map. A
+        # transposed convolution over a 1x1 input is equivalent to a linear
+        # layer followed by a reshape, and keeps the whole model convolutional.
+        layers: list[nn.Module] = [
+            nn.ConvTranspose2d(latent_dim, channels[0], kernel_size=self.seed, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(channels[0]),
+            nn.ReLU(inplace=True),
+        ]
+
+        # Upsampling body: double the resolution, halve the channels.
+        for in_ch, out_ch in zip(channels, channels[1:]):
+            layers += self._block(in_ch, out_ch)
+
+        # Final stage reaches the image resolution and emits the image itself.
+        layers += self._to_image(channels[-1], out_channels)
+        self.net = nn.Sequential(*layers)
 
     def _block(self, in_channels: int, out_channels: int) -> list[nn.Module]:
         """One 2x upsampling stage: normalise and activate after upsampling."""
-        ...
+        if self.upsample == "transpose":
+            up: list[nn.Module] = [
+                nn.ConvTranspose2d(in_channels, out_channels, kernel_size=4, stride=2, padding=1, bias=False)
+            ]
+        else:
+            up = [
+                nn.Upsample(scale_factor=2, mode="nearest"),
+                nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False),
+            ]
+        return up + [nn.BatchNorm2d(out_channels), nn.ReLU(inplace=True)]
 
     def _to_image(self, in_channels: int, out_channels: int) -> list[nn.Module]:
         """Final 2x stage. No normalisation here -- it would fight the tanh."""
-        ...
+        if self.upsample == "transpose":
+            up: list[nn.Module] = [
+                nn.ConvTranspose2d(in_channels, out_channels, kernel_size=4, stride=2, padding=1)
+            ]
+        else:
+            up = [
+                nn.Upsample(scale_factor=2, mode="nearest"),
+                nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1),
+            ]
+        return up + [nn.Tanh()]
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         """Generate images from latent vectors of shape (N, latent_dim)."""
-        ...
+        if z.dim() == 2:
+            z = z.unsqueeze(-1).unsqueeze(-1)  # (N, D) -> (N, D, 1, 1)
+        return self.net(z)
 
     def sample_latent(self, n: int, device: torch.device | str = "cpu", generator: torch.Generator | None = None) -> torch.Tensor:
         """Draw ``n`` latent vectors from the standard normal prior.
@@ -148,12 +220,17 @@ class Generator(nn.Module):
         Passing an explicit ``generator`` gives reproducible, fixed-seed sample
         grids, which the specification requires for uncurated evaluation.
         """
-        ...
+        return torch.randn(n, self.latent_dim, device=device, generator=generator)
 
     @torch.no_grad()
     def generate(self, n: int, device: torch.device | str = "cpu", generator: torch.Generator | None = None) -> torch.Tensor:
         """Convenience wrapper: sample latents and run them through the model."""
-        ...
+        was_training = self.training
+        self.eval()
+        images = self(self.sample_latent(n, device=device, generator=generator))
+        if was_training:
+            self.train()
+        return images
 
 
 # ---------------------------------------------------------------------------
@@ -189,11 +266,31 @@ class Critic(nn.Module):
         n_blocks: int = N_BLOCKS,
         norm: str = "layer",
     ) -> None:
-        ...
+        super().__init__()
+        self.image_size = image_size
+        final = seed_size(image_size, n_blocks)
+
+        channels = [base_channels * 2**i for i in range(n_blocks)]
+
+        # First stage takes the image. No normalisation on the input layer, as
+        # in the DCGAN reference design.
+        layers: list[nn.Module] = [
+            nn.Conv2d(in_channels, channels[0], kernel_size=4, stride=2, padding=1),
+            nn.LeakyReLU(0.2, inplace=True),
+        ]
+        for in_ch, out_ch in zip(channels, channels[1:]):
+            layers += [
+                nn.Conv2d(in_ch, out_ch, kernel_size=4, stride=2, padding=1),
+                _critic_norm(norm, out_ch),
+                nn.LeakyReLU(0.2, inplace=True),
+            ]
+        # Collapse the remaining feature map to one score per image.
+        layers += [nn.Conv2d(channels[-1], 1, kernel_size=final, stride=1, padding=0)]
+        self.net = nn.Sequential(*layers)
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         """Return one score per image, shape (N,)."""
-        ...
+        return self.net(images).view(images.size(0))
 
 
 # ---------------------------------------------------------------------------
@@ -221,11 +318,28 @@ class Discriminator(nn.Module):
         base_channels: int = BASE_CHANNELS,
         n_blocks: int = N_BLOCKS,
     ) -> None:
-        ...
+        super().__init__()
+        self.image_size = image_size
+        final = seed_size(image_size, n_blocks)
+
+        channels = [base_channels * 2**i for i in range(n_blocks)]
+
+        layers: list[nn.Module] = [
+            nn.Conv2d(in_channels, channels[0], kernel_size=4, stride=2, padding=1, bias=False),
+            nn.LeakyReLU(0.2, inplace=True),
+        ]
+        for in_ch, out_ch in zip(channels, channels[1:]):
+            layers += [
+                nn.Conv2d(in_ch, out_ch, kernel_size=4, stride=2, padding=1, bias=False),
+                nn.BatchNorm2d(out_ch),
+                nn.LeakyReLU(0.2, inplace=True),
+            ]
+        layers += [nn.Conv2d(channels[-1], 1, kernel_size=final, stride=1, padding=0)]
+        self.net = nn.Sequential(*layers)
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         """Return one logit per image, shape (N,)."""
-        ...
+        return self.net(images).view(images.size(0))
 
 
 # ---------------------------------------------------------------------------
@@ -250,9 +364,59 @@ def build_models(
     Returns:
         Both networks, with DCGAN weight initialisation already applied.
     """
-    ...
+    generator = Generator(
+        latent_dim=latent_dim, image_size=image_size, base_channels=base_channels, upsample=upsample
+    )
+    if model == "wgan-gp":
+        second: nn.Module = Critic(image_size=image_size, base_channels=base_channels, norm=critic_norm)
+    elif model == "dcgan":
+        second = Discriminator(image_size=image_size, base_channels=base_channels)
+    else:
+        raise ValueError(f"Unknown model {model!r}; expected 'wgan-gp' or 'dcgan'.")
+
+    generator.apply(weights_init)
+    second.apply(weights_init)
+    return generator, second
 
 
 # ---------------------------------------------------------------------------
 # Shape and sanity check
 # ---------------------------------------------------------------------------
+
+
+if __name__ == "__main__":
+    torch.manual_seed(0)
+    batch, device = 8, "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"device: {device}\n")
+
+    # below shape checker for models created with love by Claude
+    for name in ("wgan-gp", "dcgan"):
+        generator, head = build_models(name)
+        generator, head = generator.to(device), head.to(device)
+
+        z = generator.sample_latent(batch, device=device)
+        with torch.no_grad():
+            fake = generator(z)
+            score = head(fake)
+
+        assert fake.shape == (batch, 1, *IMAGE_SIZE), f"generator produced {tuple(fake.shape)}"
+        assert score.shape == (batch,), f"{type(head).__name__} produced {tuple(score.shape)}"
+        assert float(fake.min()) >= -1.0 and float(fake.max()) <= 1.0, "tanh range violated"
+
+        print(f"{name}:")
+        print(f"  latent          {tuple(z.shape)}")
+        print(f"  generator seed  {generator.seed} -> image {tuple(fake.shape)}")
+        print(f"  {type(head).__name__:<14}  scores {tuple(score.shape)} "
+              f"range [{score.min():.3f}, {score.max():.3f}]")
+        print(f"  parameters      G {count_parameters(generator):,} | "
+              f"{type(head).__name__} {count_parameters(head):,}")
+
+        # The critic must contain no batch normalisation: it would invalidate
+        # the per-sample gradient penalty.
+        if name == "wgan-gp":
+            offenders = [n for n, m in head.named_modules() if isinstance(m, nn.BatchNorm2d)]
+            assert not offenders, f"critic contains batch norm: {offenders}"
+            print("  critic batch-norm free  ok")
+        print()
+
+    print("All shape checks passed.")
