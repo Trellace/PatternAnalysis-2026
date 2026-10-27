@@ -25,7 +25,7 @@ Scaffolded by Claude Opus 5.5
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import torch
@@ -88,6 +88,23 @@ DCGAN_DEFAULTS: dict = {
 }
 
 
+def build_config(args: argparse.Namespace) -> TrainConfig:
+    """Turn parsed arguments into a config, applying the DCGAN defaults first.
+
+    Order matters: the baseline's optimiser settings are applied before the
+    command line, so an explicit --lr still wins over DCGAN_DEFAULTS.
+    """
+    config = TrainConfig()
+    if args.model == "dcgan":
+        config = replace(config, **DCGAN_DEFAULTS)
+
+    overrides = {
+        key: value for key, value in vars(args).items()
+        if value is not None and key != "model" and hasattr(config, key)
+    }
+    return replace(config, model=args.model, **overrides)
+
+
 # ---------------------------------------------------------------------------
 # Reproducibility
 # ---------------------------------------------------------------------------
@@ -102,7 +119,7 @@ def set_seed(seed: int, deterministic: bool = False) -> None:
 
 def select_device() -> torch.device:
     """Pick CUDA else CPU."""
-    device ="cuda" if torch.cuda.is_available() else "cpu"
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 
@@ -335,13 +352,29 @@ def train(config: TrainConfig) -> TrainingHistory:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse command line options into overrides for TrainConfig class"""
-    ...
+    """Parse command line options into overrides for TrainConfig class. Allows super configurable training runs"""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--model", choices=["wgan-gp", "dcgan"], default="wgan-gp")
+    parser.add_argument("--data-root", default=None, help="Folder holding keras_slices_* subfolders")
+    parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--n-critic", type=int, default=None)
+    parser.add_argument("--gp-lambda", type=float, default=None)
+    parser.add_argument("--base-channels", type=int, default=None)
+    parser.add_argument("--upsample", choices=["transpose", "nearest"], default=None)
+    parser.add_argument("--critic-norm", choices=["layer", "instance", "none"], default=None)
+    parser.add_argument("--num-workers", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--out-dir", default=None)
+    parser.add_argument("--sample-every", type=int, default=None)
+    parser.add_argument("--checkpoint-every", type=int, default=None)
+    return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> None:
     """Entry point: build the config, train, and report outputs"""
-    ...
+    build_config(parse_args(argv))
 
 
 if __name__ == "__main__":
