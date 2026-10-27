@@ -84,6 +84,7 @@ class TrainConfig:
     out_dir: str = "outputs"
     sample_every: int = 1                       # epochs between sample grids
     checkpoint_every: int = 10                  # epochs between checkpoints
+    resume: bool = False                        # continue from checkpoints/last.pt
 
 
 # Overrides that turn the config above into the DCGAN baseline. The generator
@@ -322,33 +323,72 @@ def plot_history(history: TrainingHistory, path: str | Path, model: str) -> Path
     matplotlib.use("Agg")                       # no display on a headless run
     import matplotlib.pyplot as plt
 
-    # The middle panel differs by model: WGAN-GP has a distance estimate worth
-    # reading directly, DCGAN only has the discriminator's confidence.
-    head_key = "critic_loss" if model == "wgan-gp" else "disc_loss"
-    panels: list[tuple[str, list[str]]] = [
-        ("Losses", ["gen_loss", head_key]),
-        ("Wasserstein estimate" if model == "wgan-gp" else "Discriminator confidence",
-         ["wasserstein"] if model == "wgan-gp" else ["d_prob_real", "d_prob_fake"]),
-        ("Validation", ["val_score_real", "val_score_fake", "val_sample_std"]),
-    ]
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
-    fig, axes = plt.subplots(1, len(panels), figsize=(5 * len(panels), 4))
-    for axis, (title, keys) in zip(axes, panels):
+    def draw(axis, keys: list[str]) -> bool:
+        """Plot every key that was logged; report whether anything was."""
         plotted = False
         for key in keys:
             xs, ys = history.series(key)
             if xs:
                 axis.plot(xs, ys, label=key)
                 plotted = True
+        return plotted
+
+    def finish(axis, title: str, plotted: bool, legend: bool = True) -> None:
         axis.set_title(f"{model}: {title}")
         axis.set_xlabel("epoch")
         axis.grid(alpha=0.3)
-        if plotted:
-            axis.legend(fontsize=8)
-        else:
+        if not plotted:
             # An empty panel is more honest than a missing one: it shows the
             # metric was asked for and never logged.
             axis.text(0.5, 0.5, "no data", ha="center", va="center", transform=axis.transAxes)
+        elif legend:
+            axis.legend(fontsize=8)
+
+    # Panel 1: the raw optimisation targets.
+    head_key = "critic_loss" if model == "wgan-gp" else "disc_loss"
+    finish(axes[0], "Losses", draw(axes[0], ["gen_loss", head_key]))
+
+    # Panel 2: differs by model. WGAN-GP has a distance estimate worth reading
+    # directly; DCGAN only has the discriminator's confidence, where both
+    # curves sitting near 0.5 is the healthy case.
+    if model == "wgan-gp":
+        finish(axes[1], "Wasserstein estimate", draw(axes[1], ["wasserstein"]))
+    else:
+        plotted = draw(axes[1], ["d_prob_real", "d_prob_fake"])
+        if plotted:
+            axes[1].axhline(0.5, color="grey", linestyle=":", alpha=0.6)
+            axes[1].set_ylim(0, 1)
+        finish(axes[1], "Discriminator confidence", plotted)
+
+    # Panel 3: held-out scores, plus sample spread on a second axis. The
+    # spread is ~100x smaller than the scores, so sharing one axis flattens it
+    # against zero and hides the mode-collapse signal entirely.
+    axis = axes[2]
+    plotted = draw(axis, ["val_score_real", "val_score_fake"])
+    axis.set_ylabel("critic score")
+
+    spread = axis.twinx()
+    xs, ys = history.series("val_sample_std")
+    if xs:
+        spread.plot(xs, ys, color="tab:green", label="val_sample_std")
+        plotted = True
+    real_xs, real_ys = history.series("val_real_std")
+    if real_ys:
+        # Real-data spread is constant, so one reference line is enough: the
+        # green curve approaching it means diversity matching real anatomy,
+        # near zero means collapse.
+        spread.axhline(real_ys[-1], color="tab:green", linestyle="--", alpha=0.5,
+                       label=f"real spread ({real_ys[-1]:.3f})")
+    spread.set_ylabel("pixel spread")
+    spread.set_ylim(bottom=0)
+
+    finish(axis, "Validation", plotted, legend=False)
+    if plotted:
+        handles, labels = axis.get_legend_handles_labels()
+        extra_handles, extra_labels = spread.get_legend_handles_labels()
+        axis.legend(handles + extra_handles, labels + extra_labels, fontsize=8)
 
     fig.tight_layout()
     path = Path(path)
@@ -567,12 +607,31 @@ def _build_loaders(config: TrainConfig) -> tuple[torch.utils.data.DataLoader, to
 
 
 def _setup(config: TrainConfig):
-    """Device, data, models, optimisers and output paths for one run."""
-    set_seed(config.seed)
+    """Device, data, models, optimisers and output paths for one run.
+
+    When ``config.resume`` is set and a ``last.pt`` exists, weights, optimiser
+    state, epoch number and the logged history are all restored, so a long run
+    can be extended or recovered instead of repeated.
+    """
     device = select_device()
 
     # Fail fast on a split that would invalidate every downstream metric.
     dataset.check_patient_leakage(config.data_root)
+
+    run_dir = Path(config.out_dir) / config.model
+    (run_dir / "samples").mkdir(parents=True, exist_ok=True)
+    (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
+    checkpoint_path = run_dir / "checkpoints" / "last.pt"
+    resuming = config.resume and checkpoint_path.exists()
+
+    # Seeding happens before the loaders are built so batch shuffling is
+    # reproducible. On a resume the seed is offset by the epochs already done,
+    # otherwise the continued run would replay the exact same batch order the
+    # original run used from epoch 1.
+    start_epoch = 1
+    if resuming:
+        start_epoch = int(torch.load(checkpoint_path, map_location="cpu", weights_only=True)["epoch"]) + 1
+    set_seed(config.seed + start_epoch - 1)
 
     train_loader, validate_loader = _build_loaders(config)
 
@@ -589,19 +648,30 @@ def _setup(config: TrainConfig):
     opt_g = torch.optim.Adam(generator.parameters(), lr=config.lr, betas=tuple(config.betas))
     opt_h = torch.optim.Adam(head.parameters(), lr=config.lr, betas=tuple(config.betas))
 
-    run_dir = Path(config.out_dir) / config.model
-    (run_dir / "samples").mkdir(parents=True, exist_ok=True)
-    (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
+    history_path = run_dir / "history.json"
+    if resuming:
+        load_checkpoint(checkpoint_path, generator, head, opt_g, opt_h, map_location=device)
+        # Keep the existing history so the curves span the whole run, not just
+        # the epochs added this time.
+        history = TrainingHistory.load(history_path) if history_path.exists() else TrainingHistory()
+        print(f"Resuming {config.model} from epoch {start_epoch} ({checkpoint_path})")
+    else:
+        if config.resume:
+            print(f"No checkpoint at {checkpoint_path}; starting from scratch.")
+        history = TrainingHistory()
 
-    history = TrainingHistory(config=asdict(config))
-    history.config["device"] = str(device)
-    history.config["generator_parameters"] = modules.count_parameters(generator)
-    history.config["head_parameters"] = modules.count_parameters(head)
+    history.config = {
+        **asdict(config),
+        "device": str(device),
+        "generator_parameters": modules.count_parameters(generator),
+        "head_parameters": modules.count_parameters(head),
+    }
 
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
 
-    return device, train_loader, validate_loader, generator, head, opt_g, opt_h, run_dir, history
+    return (device, train_loader, validate_loader, generator, head,
+            opt_g, opt_h, run_dir, history, start_epoch)
 
 
 def _end_of_epoch(
@@ -658,6 +728,19 @@ def _mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else float("nan")
 
 
+def _restore_step_counts(history: TrainingHistory) -> tuple[int, int]:
+    """Continue the cumulative step counters across a resume.
+
+    The counters are logged per epoch, so a resumed run picks up where the
+    previous one stopped instead of restarting at zero and making the step
+    totals in the report meaningless.
+    """
+    if not history.epochs:
+        return 0, 0
+    last = history.epochs[-1]
+    return int(last.get("generator_steps", 0)), int(last.get("head_steps", 0))
+
+
 # ---------------------------------------------------------------------------
 # Training loops
 # ---------------------------------------------------------------------------
@@ -674,12 +757,17 @@ def train_wgan_gp(config: TrainConfig) -> TrainingHistory:
     There is no early stopping: the critic loss is not a quality metric and
     does not converge to anything meaningful to stop on.
     """
-    device, train_loader, validate_loader, generator, head, opt_g, opt_h, run_dir, history = _setup(config)
+    (device, train_loader, validate_loader, generator, head,
+     opt_g, opt_h, run_dir, history, start_epoch) = _setup(config)
     print(f"WGAN-GP on {device} | {len(train_loader)} batches/epoch | "
-          f"~{len(train_loader) // config.n_critic} generator steps/epoch")
+          f"~{len(train_loader) // config.n_critic} generator steps/epoch\n")
 
-    gen_steps = head_steps = 0
-    for epoch in range(1, config.epochs + 1):
+    if start_epoch > config.epochs:
+        print(f"Already trained to epoch {start_epoch - 1}; raise --epochs to continue.")
+        return history
+
+    gen_steps, head_steps = _restore_step_counts(history)
+    for epoch in range(start_epoch, config.epochs + 1):
         generator.train()
         head.train()
         started = time.perf_counter()
@@ -737,12 +825,17 @@ def train_dcgan(config: TrainConfig) -> TrainingHistory:
     the same data, generator, epoch budget and logging -- a weak baseline would
     make the comparison meaningless.
     """
-    device, train_loader, validate_loader, generator, head, opt_g, opt_h, run_dir, history = _setup(config)
+    (device, train_loader, validate_loader, generator, head,
+     opt_g, opt_h, run_dir, history, start_epoch) = _setup(config)
     criterion = nn.BCEWithLogitsLoss()
-    print(f"DCGAN on {device} | {len(train_loader)} batches/epoch")
+    print(f"DCGAN on {device} | {len(train_loader)} batches/epoch\n")
 
-    gen_steps = head_steps = 0
-    for epoch in range(1, config.epochs + 1):
+    if start_epoch > config.epochs:
+        print(f"Already trained to epoch {start_epoch - 1}; raise --epochs to continue.")
+        return history
+
+    gen_steps, head_steps = _restore_step_counts(history)
+    for epoch in range(start_epoch, config.epochs + 1):
         generator.train()
         head.train()
         started = time.perf_counter()
@@ -822,6 +915,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--out-dir", default=None)
     parser.add_argument("--sample-every", type=int, default=None)
     parser.add_argument("--checkpoint-every", type=int, default=None)
+    # default=None rather than False so build_config's "skip unset options"
+    # filter leaves the config default alone when the flag is absent.
+    parser.add_argument("--resume", action="store_true", default=None,
+                        help="Continue from checkpoints/last.pt up to --epochs")
     return parser.parse_args(argv)
 
 
