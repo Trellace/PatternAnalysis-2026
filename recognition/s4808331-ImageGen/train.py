@@ -31,6 +31,7 @@ Scaffolded by Claude Opus 5.5
 from __future__ import annotations
 
 import argparse
+import json
 import random
 import time
 from dataclasses import asdict, dataclass, field, replace
@@ -281,16 +282,32 @@ class TrainingHistory:
 
     def record(self, epoch: int, **values: float) -> None:
         """Append one epoch's numbers."""
-        ...
+        self.epochs.append({"epoch": epoch, **values})
 
     def save(self, path: str | Path) -> Path:
         """Write the history to JSON."""
-        ...
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Rewritten in full every epoch rather than appended to, so an
+        # interrupted run still leaves a valid JSON file behind.
+        path.write_text(json.dumps({"config": self.config, "epochs": self.epochs}, indent=2))
+        return path
 
     @classmethod
     def load(cls, path: str | Path) -> "TrainingHistory":
         """Read a history back for plotting or comparison."""
-        ...
+        payload = json.loads(Path(path).read_text())
+        return cls(config=payload.get("config", {}), epochs=payload.get("epochs", []))
+
+    def series(self, key: str) -> tuple[list[int], list[float]]:
+        """Return (epochs, values) for one logged key, skipping missing entries.
+
+        Keys differ between the two models and validation may be absent, so
+        plotting asks for whatever it wants and gets empty lists if it is not
+        there rather than a KeyError.
+        """
+        pairs = [(e["epoch"], e[key]) for e in self.epochs if key in e]
+        return [p[0] for p in pairs], [p[1] for p in pairs]
 
 
 def plot_history(history: TrainingHistory, path: str | Path, model: str) -> Path:
@@ -300,7 +317,45 @@ def plot_history(history: TrainingHistory, path: str | Path, model: str) -> Path
     the README will embed: generator and critic/discriminator loss, the
     Wasserstein estimate for WGAN-GP, and any validation metrics recorded.
     """
-    ...
+    import matplotlib
+
+    matplotlib.use("Agg")                       # no display on a headless run
+    import matplotlib.pyplot as plt
+
+    # The middle panel differs by model: WGAN-GP has a distance estimate worth
+    # reading directly, DCGAN only has the discriminator's confidence.
+    head_key = "critic_loss" if model == "wgan-gp" else "disc_loss"
+    panels: list[tuple[str, list[str]]] = [
+        ("Losses", ["gen_loss", head_key]),
+        ("Wasserstein estimate" if model == "wgan-gp" else "Discriminator confidence",
+         ["wasserstein"] if model == "wgan-gp" else ["d_prob_real", "d_prob_fake"]),
+        ("Validation", ["val_score_real", "val_score_fake", "val_sample_std"]),
+    ]
+
+    fig, axes = plt.subplots(1, len(panels), figsize=(5 * len(panels), 4))
+    for axis, (title, keys) in zip(axes, panels):
+        plotted = False
+        for key in keys:
+            xs, ys = history.series(key)
+            if xs:
+                axis.plot(xs, ys, label=key)
+                plotted = True
+        axis.set_title(f"{model}: {title}")
+        axis.set_xlabel("epoch")
+        axis.grid(alpha=0.3)
+        if plotted:
+            axis.legend(fontsize=8)
+        else:
+            # An empty panel is more honest than a missing one: it shows the
+            # metric was asked for and never logged.
+            axis.text(0.5, 0.5, "no data", ha="center", va="center", transform=axis.transAxes)
+
+    fig.tight_layout()
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+    return path
 
 
 def save_sample_grid(
@@ -567,6 +622,9 @@ def _end_of_epoch(
         epoch_logs.update(validate(generator, head, validate_loader, config, device))
     epoch_logs.update(resource_profile(device))
 
+    history.record(epoch, **epoch_logs)
+    history.save(run_dir / "history.json")
+
     if config.sample_every and epoch % config.sample_every == 0:
         save_sample_grid(
             generator,
@@ -667,7 +725,7 @@ def train_wgan_gp(config: TrainConfig) -> TrainingHistory:
               f"critic {epoch_logs['critic_loss']:+8.3f} | gen {epoch_logs['gen_loss']:+8.3f} | "
               f"{epoch_logs['epoch_seconds']:5.1f}s")
 
-    # TODO plot history
+    plot_history(history, run_dir / "training_curves.png", config.model)
     return history
 
 
@@ -728,7 +786,7 @@ def train_dcgan(config: TrainConfig) -> TrainingHistory:
               f"D(real) {epoch_logs['d_prob_real']:.3f} D(fake) {epoch_logs['d_prob_fake']:.3f} | "
               f"{epoch_logs['epoch_seconds']:5.1f}s")
 
-    #TODO plot history
+    plot_history(history, run_dir / "training_curves.png", config.model)
     return history
 
 
