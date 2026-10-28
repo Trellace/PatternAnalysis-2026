@@ -282,7 +282,14 @@ class TrainingHistory:
     epochs: list[dict] = field(default_factory=list)
 
     def record(self, epoch: int, **values: float) -> None:
-        """Append one epoch's numbers."""
+        """Append one epoch's numbers, replacing any existing entry for it.
+
+        A resume can re-run an epoch that was already logged: last.pt is
+        written after the history entry, so an interruption between the two
+        leaves that epoch recorded but not checkpointed. Replacing rather than
+        appending keeps one row per epoch.
+        """
+        self.epochs = [e for e in self.epochs if e.get("epoch") != epoch]
         self.epochs.append({"epoch": epoch, **values})
 
     def save(self, path: str | Path) -> Path:

@@ -187,7 +187,11 @@ def _save_grid(images: torch.Tensor, path: str | Path, title: str, nrow: int = 4
     grid = make_grid(images, nrow=nrow, normalize=True, value_range=(-1, 1), padding=2)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    plt.figure(figsize=(10, 2.5 * (len(images) / nrow)))
+    # Size the figure to the grid's own aspect ratio. Assuming square tiles
+    # leaves large white margins for the 2:1 slices, badly so for the wide
+    # interpolation strips.
+    height, width = grid.shape[1], grid.shape[2]
+    plt.figure(figsize=(10, max(1.5, 10.0 * height / width)))
     plt.imshow(grid.permute(1, 2, 0).numpy(), cmap="gray")
     plt.axis("off")
     plt.title(title)
@@ -233,21 +237,32 @@ def measure_generation_throughput(
     context setup and kernel autotuning that would otherwise be charged to the
     measurement.
     """
+    on_cuda = torch.cuda.is_available() and torch.device(device).type == "cuda"
+
     generate(generator, batch_size, device=device)          # warm up
-    if torch.cuda.is_available():
+    if on_cuda:
         torch.cuda.synchronize()
+        # Reset here, not at the start of evaluate(): otherwise the peak is set
+        # by the Inception network FID loads and by the nearest-neighbour
+        # search, neither of which is part of generating images. Both models
+        # use an identical generator, so any difference between them in the
+        # earlier figure was measurement order, not architecture.
+        torch.cuda.reset_peak_memory_stats(device)
 
     started = time.perf_counter()
     generate(generator, n, device=device, batch_size=batch_size)
-    if torch.cuda.is_available():
+    if on_cuda:
         torch.cuda.synchronize()
     elapsed = time.perf_counter() - started
 
-    return {
+    result = {
         "generation_count": n,
         "generation_seconds": elapsed,
         "images_per_second": n / elapsed if elapsed else float("nan"),
     }
+    if on_cuda:
+        result["generation_peak_vram_gib"] = torch.cuda.max_memory_allocated(device) / 1024**3
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -377,6 +392,7 @@ def fidelity_ssim(
     real_test: torch.Tensor,
     config: EvalConfig,
     device: torch.device | str = "cpu",
+    real_control: torch.Tensor | None = None,
 ) -> dict[str, float]:
     """AC1 fidelity: SSIM between each generated slice and its closest real one.
 
@@ -387,6 +403,19 @@ def fidelity_ssim(
     scores, _ = nearest_neighbour_ssim(fake, real_test, config, device=device)
     result = _distribution(scores, "fidelity_ssim")
     result["ac1_ssim_pass"] = bool(result["fidelity_ssim_mean"] > AC1_MIN_SSIM)
+
+    if real_control is not None:
+        # The achievable ceiling, measured the same way: real slices from a
+        # split no model trained on, scored against the same test reference.
+        # SSIM compares fixed pixel positions, and these slices are not
+        # spatially registered, so even genuine unseen anatomy scores far
+        # below 1. Without this number the AC1 threshold cannot be judged.
+        control, _ = nearest_neighbour_ssim(real_control, real_test, config, device=device)
+        result.update(_distribution(control, "fidelity_ssim_real_control"))
+        ceiling = result["fidelity_ssim_real_control_mean"]
+        result["fidelity_vs_ceiling"] = (
+            result["fidelity_ssim_mean"] / ceiling if ceiling else float("nan")
+        )
     return result
 
 
@@ -675,6 +704,9 @@ class EvalReport:
         lines += [
             f"AC1 fidelity    mean SSIM {m.get('fidelity_ssim_mean', float('nan')):.4f} "
             f"(> {AC1_MIN_SSIM})  [{mark('ac1_ssim_pass')}]",
+            f"                real-data ceiling "
+            f"{m.get('fidelity_ssim_real_control_mean', float('nan')):.4f}; "
+            f"generated reaches {100 * m.get('fidelity_vs_ceiling', float('nan')):.0f}% of it",
             f"                FID vs test  {m.get('fid_vs_test', float('nan')):.2f} "
             f"(n={m.get('fid_test_reference_n', 0)})",
             f"                FID vs train {m.get('fid_vs_train', float('nan')):.2f} "
@@ -707,6 +739,9 @@ def evaluate(config: EvalConfig) -> EvalReport:
     #load provided files
     real_test = load_real_images(config, "test", device="cpu")
     real_train = load_real_images(config, "train", device="cpu")
+    # The validate split is the AC1 control: real anatomy no model saw,
+    # scored against the same test reference the generated slices are.
+    real_control = load_real_images(config, "validate", device="cpu")
 
     fake = generate(generator, config.n_samples, device=device,
                     seed=config.seed, batch_size=config.batch_size)
@@ -722,7 +757,8 @@ def evaluate(config: EvalConfig) -> EvalReport:
     report.figures += [str(p) for p in save_sample_grids(generator, config, device=device)]
 
     print("AC1 fidelity (SSIM to nearest real test slice)...")
-    metrics.update(fidelity_ssim(fake, real_test, config, device=device))
+    metrics.update(fidelity_ssim(fake, real_test, config, device=device,
+                                 real_control=real_control))
 
     print("AC1 fidelity (FID)...")
     fid_fake = generate(generator, config.n_fid_samples, device=device,
@@ -747,6 +783,9 @@ def evaluate(config: EvalConfig) -> EvalReport:
     metrics.update(measure_generation_throughput(
         generator, device=device, n=config.n_samples, batch_size=config.batch_size))
     if device.type == "cuda":
+        # Whole-evaluation peak, which includes FID's Inception network and
+        # the nearest-neighbour search. generation_peak_vram_gib above is the
+        # figure to quote for inference cost.
         metrics["peak_vram_gib"] = torch.cuda.max_memory_allocated(device) / 1024**3
 
     print("Figures...")
@@ -774,13 +813,16 @@ def compare(reports: list[EvalReport], path: str | Path) -> Path:
         ("Epoch", "epoch", "{:.0f}"),
         ("Generator parameters", "generator_parameters", "{:,.0f}"),
         ("AC1 mean SSIM to nearest real", "fidelity_ssim_mean", "{:.4f}"),
+        ("AC1 real-data SSIM ceiling", "fidelity_ssim_real_control_mean", "{:.4f}"),
+        ("AC1 fraction of ceiling reached", "fidelity_vs_ceiling", "{:.3f}"),
         ("AC1 FID vs test", "fid_vs_test", "{:.2f}"),
         ("AC1 FID vs train", "fid_vs_train", "{:.2f}"),
         ("AC2 pairwise SSIM (generated)", "diversity_ssim_generated", "{:.4f}"),
         ("AC2 pairwise SSIM (real)", "diversity_ssim_real", "{:.4f}"),
         ("AC3 max SSIM to training slice", "memorisation_generated_max", "{:.4f}"),
         ("AC3 same statistic, real test", "memorisation_real_test_max", "{:.4f}"),
-        ("AC4 peak VRAM (GiB)", "peak_vram_gib", "{:.2f}"),
+        ("AC4 generation peak VRAM (GiB)", "generation_peak_vram_gib", "{:.2f}"),
+        ("AC4 evaluation peak VRAM (GiB)", "peak_vram_gib", "{:.2f}"),
         ("AC4 images per second", "images_per_second", "{:.0f}"),
     ]
 
