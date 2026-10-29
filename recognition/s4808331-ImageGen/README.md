@@ -24,7 +24,7 @@ trained on identical data with an identical generator.
 A GAN trains two networks against each other. The **generator** maps a 128-value
 random vector to a 64x128 image. The **critic** scores images, and the generator
 is rewarded for producing output the critic scores highly. Neither network is
-told what anatomy is, the structure emerges from the competition.
+told what anatomy is; the structure emerges from the competition.
 
 The two models here differ only in how that competition is scored, which is what
 makes the comparison meaningful.
@@ -35,7 +35,7 @@ discriminator is confident, its gradient flattens and the generator stops
 receiving a useful learning signal, exactly when it most needs one.
 
 **WGAN-GP** replaces the classifier with a critic that emits an unbounded score.
-What matters is the *gap* between its mean score on real and generated batches,
+What matters is the gap between its mean score on real and generated batches,
 which estimates the Wasserstein distance between the two distributions. An
 unbounded score cannot saturate, so the gradient survives. The estimate is only
 valid while the critic is 1-Lipschitz - its output cannot change faster than its
@@ -47,7 +47,41 @@ depend on the rest of the batch. The critic is updated five times per generator
 update, since the distance estimate is only meaningful when the critic is close
 to optimal.
 
-GET PIPELINE DIAGRAM
+```text
+  HipMRI slice (.nii.gz)                     z ~ N(0, I), 128 values
+  256x128, patient-disjoint splits                    |
+              |                                       v
+              v                     +----------- Generator (shared) -----------+
+  dataset.py                        | ConvT 4x8 kernel  ->  512 x  4 x   8     |
+    crop/pad to 256x128             | ConvT stride 2    ->  256 x  8 x  16     |
+    per-slice scale to [-1, 1]      | ConvT stride 2    ->  128 x 16 x  32     |
+    antialiased resize to 64x128    | ConvT stride 2    ->   64 x 32 x  64     |
+              |                     | ConvT stride 2    ->    1 x 64 x 128     |
+              |                     | (BatchNorm + ReLU between, tanh output)  |
+              |                     +------------------------------------------+
+              |                                       |
+              | real 1 x 64 x 128                     | fake 1 x 64 x 128
+              +-------------------+-------------------+
+                                  |
+                                  v
+         +--------------------------+--------------------------+
+         | WGAN-GP critic           | DCGAN discriminator      |
+         |  4 stride-2 convs        |  4 stride-2 convs        |
+         |  LayerNorm, LeakyReLU    |  BatchNorm, LeakyReLU    |
+         |  -> unbounded score      |  -> real/fake logit      |
+         +--------------------------+--------------------------+
+         | E[fake] - E[real]        | BCE with logits          |
+         |   + 10 x grad penalty    |   (non-saturating G)     |
+         | 5 critic steps / G step  | 1 D step / G step        |
+         | Adam 1e-4, (0.0, 0.9)    | Adam 2e-4, (0.5, 0.999)  |
+         +--------------------------+--------------------------+
+                                  |
+                                  | gradients flow back to the generator
+                                  v
+  predict.py: trained generator -> 1,000 uncurated samples
+    AC1  SSIM to nearest test slice, FID      AC3  nearest training slice
+    AC2  pairwise SSIM vs real                AC4  VRAM, throughput
+```
 
 *The generator is shared by both models: a 128-d latent vector is projected to a
 4x8 feature map, then doubled four times to 64x128 with a tanh output. Only the
@@ -55,6 +89,10 @@ second network and the loss differ between WGAN-GP and DCGAN.*
 
 
 ## Feasibility Review
+
+*As presented and accepted at the in person review  Two plans changed
+after the review: training moved from Rangpur to a local RTX 3060 Ti (suggested by
+the tutor for easy developement), and slices are resized to 64x128 rather than 128x128.*
 
 ### 1. User Need, Scope & Acceptance Criteria
 
@@ -67,7 +105,7 @@ second network and the loss differ between WGAN-GP and DCGAN.*
 - **AC1 – Fidelity:** mean SSIM > 0.6 between generated slices and their closest real test slice, and FID lower than the DCGAN baseline.
 - **AC2 – Diversity:** mean SSIM between pairs of generated slices is no higher than between real slices.
 - **AC3 – No memorisation:** Max SSIM ≤ 0.95 between a generated slice and the most similar-appearing training data entry
-- **AC4 – Resources:** training fits in ≤ 16 GB peak VRAM within ≤ 6 GPU-hours on Rangpur; 1,000 slices generate in < 10 s. Other benchmark is to generate and fit within 30min on an Apple M4 16gb machine  ADVISED BY CLAUDE ON THIS BENCHMARK, goal to get running on my own machine set by myself
+- **AC4 – Resources:** training fits in ≤ 16 GB peak VRAM within ≤ 6 GPU-hours on Rangpur; 1,000 slices generate in < 10 s. Secondary benchmark: train and generate within 30 min on an Apple M4 (16 GB).
 
 ### 2. Model Choice & Course Concepts
 
@@ -78,7 +116,7 @@ second network and the loss differ between WGAN-GP and DCGAN.*
 
 #### Model Architecture & Difficulty
 - **Model:** WGAN-GP [Normal difficulty]. Convolutional generator (128-d latent → upsampling blocks → squash with tanh) and critic (strided convs, layer norm, no batch norm, unbounded linear output).
-- **Training:** 5 critic steps per generator step, gradient penalty λ = 10 SUGGESTED BY CLAUDE
+- **Training:** 5 critic steps per generator step, gradient penalty λ = 10.
 - **Baseline:** DCGAN with the same backbone, using batch norm and BCE loss, so the comparison isolates the effect of the Wasserstein loss.
 
 #### Supporting Concepts & Literature
@@ -113,7 +151,7 @@ second network and the loss differ between WGAN-GP and DCGAN.*
 - If 128×128 is unstable or too slow, drop to 64×64. If the SSIM target is missed I'll report the gap with the failure analysis.
 
 ## Dependencies
-Developed on Omarchy (Arch), with python 3.14.7 installed
+Developed on Omarchy (Arch Linux) with Python 3.14.7.
 
 All versions are pinned in [`requirements.txt`](requirements.txt).
 
@@ -124,21 +162,19 @@ All versions are pinned in [`requirements.txt`](requirements.txt).
 | torchvision | 0.29.1 | Image transforms and sample grids |
 | numpy | 2.5.4 | Data loading and visualisation (not used in `modules.py`) |
 | nibabel | 5.4.2 | Reading HipMRI Nifti slices |
-| scikit-image | 0.26.0 | SSIM |
 | scipy | 1.18.1 | Required for FID |
-| torchmetrics | 1.9.0 | FID |
+| torchmetrics | 1.9.0 | SSIM and FID |
 | torch-fidelity | 0.4.0 | Inception feature extractor for FID |
 | matplotlib | 3.11.2 | Loss plots and figures |
 | tqdm | 4.70.1 | Progress bars |
 
 ### Hardware
-- Training and evaluation: NVIDIA RTX 3060 Ti, Linux (Arch). The card is sold as 8 GB, but PyTorch reports **7.63 GB** usable and the desktop session holds ~0.9 GB of that, so the training budget is roughly **6.5 GB**.
-- NVIDIA driver 610.57.04, CUDA 13.0 (`torch 2.14.1+cu130`), compute capability 8.6.
-- Development and later feasibility test: Apple M4 (16 GB), PyTorch MPS backend.
+- Training and evaluation: NVIDIA RTX 3060 Ti, Linux (Arch). The card is sold as 8 GB, but PyTorch reports **7.63 GB** usable.
+- NVIDIA driver 610.57.04, CUDA 13.0, compute capability 8.6.
 
 ### Setup
 
-The interpreter version is pinned in `.python-version`, so [`uv`](https://docs.astral.sh/uv/)
+The interpreter version is pinned in `.python-version`, so `uv`
 creates the environment without needing a matching system Python:
 
 ```bash
@@ -155,7 +191,6 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
-Above instructions generated by Claude Opus 5.5.
 
 On Linux the PyPI `torch` wheel already includes CUDA, so only the NVIDIA driver is needed.
 
@@ -164,7 +199,7 @@ On Linux the PyPI `torch` wheel already includes CUDA, so only the NVIDIA driver
 ## Usage
 
 The dataset is never committed. Download `keras_slices_data` and keep it outside
-the repository, then point the scripts at it with `--data-root` argument. The folder must
+the repository, then point the scripts at it with the `--data-root` argument (`--root` for `dataset.py`). The folder must
 contain `keras_slices_train`, `keras_slices_validate` and `keras_slices_test`.
 
 All commands below assume the virtual environment is active and are run from
@@ -172,7 +207,8 @@ All commands below assume the virtual environment is active and are run from
 
 ```bash
 source .venv/bin/activate
-export DATA=~/Projects/Comp3710/keras_slices_data <- example directory only, point to your data
+# Example path only: point this at your own copy of keras_slices_data
+export DATA=~/Projects/Comp3710/keras_slices_data
 ```
 
 ### 1. Check the data pipeline
@@ -216,14 +252,13 @@ python train.py --model wgan-gp --epochs 100 --data-root $DATA
 python train.py --model dcgan --epochs 100 --data-root $DATA
 ```
 
-A short run with less epochs is worth doing first to confirm the outputs all land where expected:
+A short run with fewer epochs is worth doing first to confirm the outputs all land where expected:
 
 ```bash
 python train.py --model wgan-gp --epochs 2 --data-root $DATA
 ```
 
-The first run of either model preprocesses the dataset once (about 30 seconds)
-and caches it to `outputs/cache/`; later runs load the cache directly.
+The first run of either model preprocesses the dataset once and caches it to `outputs/cache/`; later runs load the cache directly.
 
 ### 4. Resume or extend a run
 
@@ -272,14 +307,52 @@ Run `python train.py --help` for the full list.
 
 ### Measured cost
 
-
 On an RTX 3060 Ti at the default batch size of 64, WGAN-GP runs at roughly
 9-12 seconds/epoch with a peak allocation of 1.12 GB, so a 100-epoch run takes about
 17 minutes. DCGAN is faster per epoch, having no gradient penalty and one generator pass.
 
+### 5. Evaluate
 
+`predict.py` loads a trained generator from its checkpoint, generates uncurated
+samples and runs every acceptance-criterion measurement (AC1-AC4). The critic
+and discriminator are not loaded, as they are only needed for training.
 
+```bash
+# Both models, plus a side-by-side comparison table
+python predict.py --model both --data-root $DATA
 
+# One model, from a specific checkpoint
+python predict.py --model wgan-gp --checkpoint outputs/wgan-gp/checkpoints/epoch_0500.pt --data-root $DATA
+```
+
+By default each model's checkpoint is `outputs/<model>/checkpoints/last.pt`. With
+`--model both`, `--checkpoint` is ignored and each model's `last.pt` is used. A
+pass/fail summary for each acceptance criterion is printed when a model finishes.
+
+Each evaluation writes to `outputs/evaluation/<model>/`:
+
+| Path | Contents |
+|---|---|
+| `report.json` | every measured metric, including the real-data controls |
+| `samples_seed_NNNN.png` | uncurated 16-image grids from three fixed seeds |
+| `latent_interpolation.png` | four rows walking between pairs of latent vectors |
+| `nearest_neighbours.png` | the five generated slices closest to a training slice, beside that slice |
+| `failure_autopsy.png` | the five lowest-fidelity samples, selected by SSIM score |
+| `embedding.png` | 2D PCA projection of real and generated slices |
+
+`--model both` also writes `outputs/evaluation/comparison.md`, the WGAN-GP vs
+DCGAN table used in the Results section.
+
+| Option | Default | Notes |
+|---|---|---|
+| `--model` | `wgan-gp` | `wgan-gp`, `dcgan` or `both` |
+| `--checkpoint` | `outputs/<model>/checkpoints/last.pt` | generator weights to evaluate |
+| `--n-samples` | 1000 | samples used for SSIM, diversity and the memorisation audit |
+| `--n-fid-samples` | 2048 | separate, larger sample for FID |
+| `--n-diversity` | 400 | subsample size for pairwise SSIM |
+| `--prefilter-k` | 50 | L2 shortlist size for the nearest-neighbour SSIM search |
+| `--seed` | 1234 | seed for every generated sample |
+| `--out-dir` | `outputs/evaluation` | where reports and figures are written |
 
 *Usage section drafted by Claude Opus 5.5*
 
@@ -316,20 +389,20 @@ training and the real-data control for AC1.
 ### Preprocessing
 
 Slices are loaded with nibabel, with a guard that drops the trailing singleton
-dimension some HipMRI files carry (specification Appendix B).
+dimension some HipMRI files carry (see project specification Appendix B).
 
-**Geometry.** The audit found slices are 256x128, a native clean landscape size. The original plan
+**Geometry.** The audit found slices are 256x128, which display as a
+perfectly 2:1 landscape image. Sizes below are given as height x width. The original plan
 was to resize to 128x128, but squashing to square would compress the pelvis by a
 factor of two along one axis and produce anatomy that is physiologically
 impossible by construction, which is precisely the failure this project exists to
-detect. Slices are therefore resized to 128x64, an exact 2x downsample that
+detect. Slices are therefore resized to 64x128, an exact 2x downsample that
 preserves geometry and costs half the pixels of a 128x128 square. Resizing uses
 antialiasing: without it, discarded fine texture aliases into high-frequency
 speckle that the critic can trivially detect and the generator cannot reproduce.
 
-As a guardrail any slices that are larger than the expected size are centre-cropped
-to the common 256x128 grid before resizing, so it keeps the same physical scale
-as every other slice rather than being stretched relative to them.
+As a guardrail, any slice that does not match the common 256x128 grid is centre-cropped or padded onto it before resizing, so it keeps the
+same physical scale as every other slice rather than being stretched relative to them.
 
 **Intensity.** MRI has no absolute brightness scale, and the audit found
 per-slice maxima varying by roughly 5x across the dataset. Normalisation is therefore **per slice** - a single global
@@ -360,21 +433,21 @@ compared against the actual training images, not against transformed variants.
 | Peak VRAM during training | 1.12 GB | 1.06 GB |
 
 Both models see identical data and take identical numbers of head updates. They
-differ in generator updates because WGAN-GP spends four of every five batches on
-the critic. This is reported explicitly because it is the single largest
+differ in generator updates because WGAN-GP takes a critic step on every batch
+but a generator step on only every fifth. This is reported explicitly because it is the single largest
 confound in any epoch-matched GAN comparison.
 
 ![WGAN-GP training curves](assets/wgan-gp_training_curves.png)
 ![DCGAN training curves](assets/dcgan_training_curves.png)
 
-WGAN-GP trained without a single point where instability suddenly struck. The Wasserstein estimate
+WGAN-GP trained without any instability events. The Wasserstein estimate
 fell from 79.9 to a plateau of ~10 by epoch 15 and stayed there for the
 remaining 485 epochs; the gradient penalty settled at approximately 0.19,
 confirming the Lipschitz constraint held throughout.
 
 A finding worth stating plainly: **the Wasserstein plateau did not indicate
 convergence.** Sample quality continued improving visibly from epoch 25 through
-to epoch 500, long after the curve flattened. The estimate is a 
+to epoch 500, long after the curve flattened. The estimate is a
 measurement between two networks improving together, so it settles at an
 equilibrium while absolute quality still rises. Stopping on the curve would have
 discarded most of the model's development. This is a concrete illustration of why
@@ -382,8 +455,8 @@ GANs lack a usable convergence criterion, and why the sample grids rather than
 the loss curves governed the stopping decision.
 
 **DCGAN's discriminator saturated.** Confidence drifted from 0.88/0.12 at epoch
-10 to 0.992/0.008 over the final hundred epochs, with roughly six oscillation
-events before settling. Generator loss rose from 4.3 to 10-17 and grew noisier:
+10 to 0.992/0.008 over the final hundred epochs, with several occilations
+ before settling. Generator loss rose from 4.3 to 10-17 and grew noisier:
 the generator was being pushed harder while receiving a weaker signal.
 
 **Held-out score inversions.** On the validate split, the discriminator scored
@@ -397,15 +470,14 @@ realism - a memorisation signal in the adversarial signal itself.
 ![WGAN-GP samples](assets/wgan-gp_samples.png)
 ![DCGAN samples](assets/dcgan_samples.png)
 
-*Uncurated grids from fixed seeds. Every image drawn is shown; no selection was
-applied.*
+*Uncurated grids from fixed seeds. Every image drawn is shown*.
 
 ### Acceptance criteria
 
 | Metric | WGAN-GP | DCGAN | Criterion |
 |---|---|---|---|
 | AC1 mean SSIM to nearest real test slice | **0.3474** | 0.3019 | > 0.6 |
-| AC1 real-data SSIM ceiling (control) | *[to measure]* | *[to measure]* | - |
+| AC1 real-data SSIM ceiling (control) | TODO | TODO| - |
 | AC1 FID vs test (n=540) | **119.36** | 140.16 | below baseline |
 | AC1 FID vs train (n=11,460) | **85.64** | 122.27 | below baseline |
 | AC2 pairwise SSIM, generated | **0.2345** | 0.3188 | <= real |
@@ -415,7 +487,7 @@ applied.*
 | AC4 generator parameters | 4,852,609 | 4,852,609 | - |
 | AC4 generation throughput | 14,547 img/s | 15,388 img/s | 1000 in < 10 s |
 
-**AC1 - fidelity. Some criterion met, main threshold not met.** WGAN-GP's
+**AC1 - fidelity. Comparative criterion met; absolute threshold not met.** WGAN-GP's
 FID is lower than the baseline's on both reference sets, by 30% against the larger
 train reference, so the comparative half of AC1 passes decisively.
 
@@ -427,7 +499,7 @@ search, and these slices are not spatially registered: shifting one slice by two
 pixels against itself drops SSIM from 1.00 to 0.38. Scoring above 0.6 therefore
 requires near-pixel-exact reproduction of a reference slice - which AC3 exists to
 forbid. AC1 and AC3 are in direct tension, and the honest report of WGAN-GP's
-0.3474 is that it reaches approximately 97% of the ceiling genuine unseen anatomy
+0.3474 is that it reaches approximately 97% of the level unseen anatomy
 achieves.
 
 **AC2 - diversity. WGAN-GP passes, DCGAN fails.** Generated slices from WGAN-GP
@@ -443,8 +515,8 @@ measurable downstream consequence.
 ![WGAN-GP nearest training neighbours](assets/wgan-gp_nearest_neighbours.png)
 
 Neither model approaches the 0.95 threshold. Read against the real-data control
-rather than the threshold, WGAN-GP's mean (0.4291) is statistically
-indistinguishable from the control (0.422): **on average its output is as original
+rather than the threshold, WGAN-GP's mean (0.4291) is close to
+the control (0.422): **on average its output is as original
 as genuinely unseen patient data.** Its maximum (0.6073) does exceed the control
 maximum (0.5268), so the closest single match sits nearer the training set than
 any real held-out slice does. Inspection of those pairs shows shared pose,
@@ -452,7 +524,7 @@ framing and bladder position - the dataset's consistent acquisition geometry -
 with clearly different underlying anatomy. That is learned acquisition convention,
 not a copied patient.
 
-DCGAN's lower maximum (0.4456) should not be considered to safeguard patient privay. It sits
+DCGAN's lower maximum (0.4456) should not be read as better patient privacy. It sits
 further from the training set partly because it sits further from everything:
 its fidelity is lower across the board. Reduced memorisation purchased with
 reduced quality is not a favourable trade.
@@ -469,7 +541,7 @@ genuine anatomical model looks like and what a lookup table does not.
 **AC4 - resources.** Both generators are architecturally identical
 (~4.8 million parameters), so inference cost is the same by construction. Training
 peak VRAM was 1.12 GB (WGAN-GP) against 1.06 GB (DCGAN), both far inside the
-RTX 3060 Ti's usable ~8 GB. Generation of 1,000 slices completes in well under
+7.63 GB PyTorch reports as usable on the RTX 3060 Ti. Generation of 1,000 slices completes in well under
 a second against the 10-second budget. WGAN-GP's additional cost is wall-clock:
 matching the baseline's generator-step count takes roughly five times as long,
 because of the 5:1 critic schedule and the second backward pass the gradient
@@ -483,16 +555,13 @@ The five cases below are the **lowest-fidelity samples by SSIM**, selected
 programmatically rather than by eye, so the selection is reproducible and cannot
 be accused of flattering the model.
 
-1. **Sample 189 (SSIM 0.183)** - [observed issues and cause TODO for all]
-2. **Sample 59 (SSIM 0.194)** 
-3. **Sample 455 (SSIM 0.210)** 
-4. **Sample 356 (SSIM 0.214)** 
-5. **Sample 536 (SSIM 0.215)** 
+1. **Sample 189 (SSIM 0.183)** - low clarity, internal structures seem completely inaccurate and irrelevant, poor symmetry
+2. **Sample 59 (SSIM 0.194)** - smeared low resolution shapes, no clearly identifiable structures, poor symmetry
+3. **Sample 455 (SSIM 0.210)** - same as #2, also has slightly identifiable gridline/square artifacts. Brightness changes left to right. Potential effect of transposed convolutions
+4. **Sample 356 (SSIM 0.214)** - less of a brightness gradient but still with seemingly inaccurate dark splotches
+5. **Sample 536 (SSIM 0.215)** - washed out, soft tissue edges, no recognisable structures, poor symmetry
 
-Defects to look for and name explicitly: periodic checkerboard texture from the
-transposed convolutions; blurred or discontinuous tissue margins; absent or
-malformed bladder; left-right asymmetry inconsistent with pelvic anatomy;
-implausible intensity transitions between adjacent structures.
+All five successfully showed the torso body outline, but struggled with unclear internal structures and artifacts.
 
 ## Recommendation
 
@@ -500,7 +569,7 @@ implausible intensity transitions between adjacent structures.
 augmentation, with conditions. It is not yet suitable for unrestricted release.**
 
 The evidence supporting release is substantive. The generated distribution is at
-least as diverse as the real one (AC2), average novelty is indistinguishable from
+least as diverse as the real one (AC2), average novelty is close to that of
 genuinely unseen patient data (AC3), latent interpolation is smooth and
 continuous, and no generated slice approaches the memorisation threshold. The
 model trained stably across 500 epochs without a single instability event, and
@@ -508,17 +577,17 @@ its critic showed no sign of overfitting to the training split.
 
 Three conditions qualify that verdict.
 
-**First, fidelity is adequate but not high.** FID of 85.6 against the training
+**First, fidelity is passable but not high.** FID of 85.6 against the training
 reference is well ahead of the baseline, but the samples are recognisably
 synthetic: tissue margins are softer than real acquisitions and fine texture is
 not faithfully reproduced. These slices are suitable for augmenting a real
 training set, not for replacing one, and they should not be used for any task
 depending on fine-grained texture.
 
-**Second, the evidence base is narrow.** The training set comprises of a set number of patients.
+**Second, the evidence base is thin.** The training set comprises only 31 patients.
 Diversity and novelty are measured relative to that selection, and nothing in this
-evaluation establishes that the model expands to anatomy differing to
-that provided. Any claim about coverage is bounded by those patients.
+evaluation establishes that the model extends to anatomy different from
+theirs. Any claim about coverage is bounded by those patients.
 
 **Third, the memorisation audit should be re-run before any external release.**
 The maximum generated-to-training similarity exceeds the real-data control. The
@@ -535,7 +604,7 @@ unsafe to share.
 
 **Recommended next steps before release:** train at higher resolution to improve
 image fidelity; expand the number of patients; re-run the memorisation audit at
-scale. Would be interesting for a real radiologist to judge the generated output as well.
+scale; and have a radiologist assess the generated output.
 
 ## References
 
@@ -556,8 +625,7 @@ scale. Would be interesting for a real radiologist to judge the generated output
 
 ## Artificial Intelligence Usage Disclosure
 
-Claude (Claude Opus 5.5) was used throughout this project via Claude
-Code. Its contributions and my own are separated below.
+Claude (Claude Opus 5.5) was used throughout this project to streamline and educate me during development
 
 **Used for:**
 
@@ -567,29 +635,26 @@ Code. Its contributions and my own are separated below.
   nearest-neighbour search and the evaluation metrics. I reviewed, edited and
   committed all of it, and corrected the code where it was wrong.
 - **Data audit.** Claude ran the initial audit that established slice counts,
-  patient-level split separation, the 256x128 geometry at 1x1 mm spacing, and the
-  per-slice intensity variation.
-- **Design recommendations.** The 64x128 resize over 128x128, per-slice
-  percentile normalisation, `GroupNorm` in place of batch normalisation in the
+  patient-level split separation and the 256x128 geometry
+- **Design recommendations.** Verified my idea to do the 64x128 resize over 128x128, and suggested per-slice
+  intensity normalisation. `GroupNorm` in place of batch normalisation in the
   critic, and the decision to record both generator and head step counts were all
   recommended by Claude with stated reasoning. I accepted or modified each.
 - **Diagnosis and debugging.** Claude identified the discriminator saturation and
   held-out score inversion in the DCGAN logs, the unreliability of the L2
   prefilter in the nearest-neighbour search, a VRAM measurement artifact, and a
   duplicate epoch entry produced by the resume logic.
-- **Explanation.** I used Claude extensively to understand GAN concepts and other necessary theory-
-  Wasserstein distance, the Lipschitz constraint, normalisation variants, latent
-  space, and the behaviour of SSIM - which informed the analysis in this report.
-- **Report drafting.** Claude drafted sections of this README, including this
-  disclosure. The structure, claims and conclusions were reviewed and edited by
-  me.
+- **Explanation.** I used Claude extensively to understand GAN concepts and other necessary theory
+  (Wasserstein distance, the Lipschitz constraint, normalisation variants, latent
+  space, and the behaviour of SSIM), which informed the analysis in this report.
+- **Report drafting.** Claude drafted sections of this README, such as the pipeline diagram and the Usage section. It also suggested n_critic = 5, λ = 10 and the later scrapped Apple M4 benchmark from the feasibility review; the goal of running on my own hardware was mine. Everything written or suggested was reviewed and edited by me.
 
 **Not used for:**
 
--  Unchecked code generation; everything generated or edited was inspected and tested by me
+- Unchecked code generation; everything generated or edited was inspected and tested by me.
 - Running training or evaluation; all runs were executed and supervised by me.
 - Committing to the repository; every commit is mine.
 - Producing results: All numbers in this report are measured outputs from the code in this directory.
 
-Code with **heavy AI usage** are marked inline in the source files where Claude
-authored, helped debug or scaffolded a component.
+Components with **heavy AI usage** are marked inline in the source files where Claude
+authored, reworte or scaffolded a method or class.
