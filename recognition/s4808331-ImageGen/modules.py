@@ -19,7 +19,7 @@ generator starts from a 4x8 feature map and doubles four times
 most DCGAN references.
 
 This module depends only on PyTorch, as required by the project specification --
-no NumPy, and no import of dataset.py ot avoid any NumPy leaks.
+no NumPy, and no import of dataset.py to avoid any NumPy leaks.
 
 Scaffolded, debugged, docstrings and some documenting by Claude Opus 5.5
 """
@@ -32,11 +32,11 @@ from torch import nn
 # default latent dimensions
 LATENT_DIM = 128
 
-# Default output size as (height, width), mathces var in dataset.py.
+# Default output size as (height, width), matches var in dataset.py.
 IMAGE_SIZE = (64, 128)
 
 # Channel width of the shallowest feature map. Deeper layers scale this by
-# 2, 4 and 8. size was guestimated to fit on the hardware resources. 8 GB VRAM
+# 2, 4 and 8. Size was estimated to fit on the hardware resources (8 GB VRAM).
 BASE_CHANNELS = 64
 
 # Number of 2x resolution changes between the latent seed and the image.
@@ -69,7 +69,7 @@ def weights_init(module: nn.Module) -> None:
 
     Convolutions start from a zero-mean normal distribution with standard
     deviation 0.02, as in Radford et al. (2016), Section 4. Normalisation
-    weights start from a mean of 1, the paper did not spcifically say this, so it
+    weights start from a mean of 1, the paper did not specifically say this, so it
     follows common PyTorch DCGAN practice. GANs are sensitive to the
     starting point, default PyTorch initialisation tends to make the critic win
     too early, which starves the generator of useful gradients.
@@ -190,6 +190,7 @@ class Generator(nn.Module):
     def _block(self, in_channels: int, out_channels: int) -> list[nn.Module]:
         """One 2x upsampling stage: normalise and activate after upsampling."""
         if self.upsample == "transpose":
+            # Kernel 4, stride 2, padding 1 doubles height and width exactly.
             up: list[nn.Module] = [
                 nn.ConvTranspose2d(in_channels, out_channels, kernel_size=4, stride=2, padding=1, bias=False)
             ]
@@ -340,6 +341,7 @@ class Discriminator(nn.Module):
                 nn.BatchNorm2d(out_ch),
                 nn.LeakyReLU(0.2, inplace=True),
             ]
+        # Kernel covers the whole remaining 4x8 map, leaving one logit per image.
         layers += [nn.Conv2d(channels[-1], 1, kernel_size=final, stride=1, padding=0)]
         self.net = nn.Sequential(*layers)
 

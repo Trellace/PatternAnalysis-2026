@@ -129,7 +129,7 @@ def build_config(args: argparse.Namespace) -> TrainConfig:
 
 
 def set_seed(seed: int, deterministic: bool = False) -> None:
-    """Start a training session with a specfic seed for exact reproducibility.
+    """Start a training session with a specific seed for exact reproducibility.
     off by default
     """
     random.seed(seed)
@@ -431,7 +431,7 @@ def save_sample_grid(
     vectors evolving rather than a fresh draw each time. Fixed seeds and no
     cherry-picking are both required by the specification.
 
-    Claude used for matplot syntax
+    Claude used for matplotlib syntax
     """
     import matplotlib
 
@@ -652,6 +652,8 @@ def _setup(config: TrainConfig):
     # original run used from epoch 1.
     start_epoch = 1
     if resuming:
+        # Only the epoch number is needed yet; weights are restored once the
+        # models exist, further down.
         start_epoch = int(torch.load(checkpoint_path, map_location="cpu", weights_only=True)["epoch"]) + 1
     set_seed(config.seed + start_epoch - 1)
 
@@ -735,7 +737,7 @@ def _end_of_epoch(
 
 
 def _progress(iterable, description: str):
-    """ Nice qui progress bar for the progress of the epochs
+    """Terminal progress bar for each epoch.
     Wrap a loader in tqdm when it is installed, otherwise pass it through.
     Method and rest of tqdm implementation written by Claude Opus 5.5
     """
@@ -822,6 +824,7 @@ def train_wgan_gp(config: TrainConfig) -> TrainingHistory:
                 gen_losses.append(loss_g.item())
                 gen_steps += 1
 
+        # Average every logged critic component over all of this epoch's steps.
         epoch_logs = {key: _mean([entry[key] for entry in critic_logs]) for key in critic_logs[0]}
         epoch_logs.update({
             "gen_loss": _mean(gen_losses),
@@ -887,6 +890,7 @@ def train_dcgan(config: TrainConfig) -> TrainingHistory:
             gen_losses.append(loss_g.item())
             gen_steps += 1
 
+        # Average every logged discriminator component over this epoch's steps.
         epoch_logs = {key: _mean([entry[key] for entry in disc_logs]) for key in disc_logs[0]}
         epoch_logs.update({
             "gen_loss": _mean(gen_losses),

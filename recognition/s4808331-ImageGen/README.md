@@ -93,7 +93,7 @@ second network and the loss differ between WGAN-GP and DCGAN.*
 *As presented and accepted at the in person review. The measured values in
 Section 3 were filled in after the review from the data audit and the full
 training runs. Two plans changed after the review: training moved from Rangpur to a local RTX 3060 Ti (suggested by
-the tutor for easy developement), and slices are resized to 64x128 rather than 128x128.*
+the tutor for easy development), and slices are resized to 64x128 rather than 128x128.*
 
 ### 1. User Need, Scope & Acceptance Criteria
 
@@ -113,7 +113,7 @@ the tutor for easy developement), and slices are resized to 64x128 rather than 1
 #### Dataset Configuration
 - MR images only (no masks) from the provided train/validate/test folders; the case IDs in the filenames are checked so each patient sits in a single split.
 - The GAN trains on the train split only; the test split is the reference set for SSIM/FID and the memorisation control.
-- Slices are resized to a fixed size (128×128, to confirm in the data audit) and scaled to [-1, 1] to match the generator's tanh output.
+- Slices are resized to a fixed size (planned as 128×128; the data audit changed this to 64x128, see Preprocessing) and scaled to [-1, 1] to match the generator's tanh output.
 
 #### Model Architecture & Difficulty
 - **Model:** WGAN-GP [Normal difficulty]. Convolutional generator (128-d latent → upsampling blocks → squash with tanh) and critic (strided convs, layer norm, no batch norm, unbounded linear output).
@@ -688,7 +688,7 @@ Claude (Claude Opus 5.5) was used throughout this project to streamline and educ
 - **Explanation.** I used Claude extensively to understand GAN concepts and other necessary theory
   (Wasserstein distance, the Lipschitz constraint, normalisation variants, latent
   space, and the behaviour of SSIM), which informed the analysis in this report.
-- **Report drafting.** Claude drafted a scaffold for each of the sections of this README, such as the pipeline diagram and the Usage section. It also suggested n_critic = 5, λ = 10 and the Apple M4 benmark I later scrapped; the goal of running on my own hardware was mine but ultimately irrelevant. Everything written or suggested was reviewed and edited by me.
+- **Report drafting.** Claude drafted a scaffold for each of the sections of this README, such as the pipeline diagram and the Usage section. It also suggested n_critic = 5, λ = 10 and the Apple M4 benchmark I later scrapped; the goal of running on my own hardware was mine but ultimately irrelevant. Everything written or suggested was reviewed and edited by me.
 - **Source finding**. Outside of the papers referenced in the task spec I had Claude search and recommend more for me to read. I went through them and judged whether they were relevant.
 - Quick summarising and plotting of history data such as finding min and maxs, mean and medians for me to be able to write the commentary on then
 

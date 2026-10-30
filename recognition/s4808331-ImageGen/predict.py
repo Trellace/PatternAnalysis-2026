@@ -348,7 +348,7 @@ def nearest_neighbour_ssim(
     against the test split and for the memorisation audit against the train
     split.
 
-    Claude Opus 5.5 used extensively to write and debug torch syntax and the rest of teh function
+    Claude Opus 5.5 used extensively to write and debug torch syntax and the rest of the function
 
     """
     shortlist = nearest_by_l2(query, reference, config.prefilter_k, device=device)
@@ -361,6 +361,9 @@ def nearest_neighbour_ssim(
     for i in range(0, len(query), rows):
         q = query[i:i + rows].to(device)
         idx = shortlist[i:i + rows]
+        # Row r of the batch pairs one query with one of its k shortlisted
+        # references: candidates holds the references, repeated holds each
+        # query copied k times so the two line up for a single SSIM call.
         candidates = reference[idx.flatten()].to(device)
         repeated = q.unsqueeze(1).expand(len(q), k, *q.shape[1:]).reshape(len(q) * k, *q.shape[1:])
         pair_scores = _ssim_pairs(repeated, candidates).view(len(q), k)
@@ -617,6 +620,7 @@ def failure_autopsy(
     Picks the lowest-fidelity samples rather than hand-chosen ones so the
     selection is reproducible.
     """
+    # Indices of the n lowest SSIM scores, i.e. the worst-matching samples.
     worst = np.argsort(scores)[:config.n_autopsy]
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -642,7 +646,7 @@ def embedding_plot(
 ) -> Path:
     """Optional 2D embedding of real against generated images.
 
-    Was curious to see how the generated and real datasets a positioned int he same space. 
+    Was curious to see how the generated and real datasets are positioned in the same space. 
     Helps visualise that outputs continually changed into neighbours.
 
     Claude Opus 5.5 used for writing this function
