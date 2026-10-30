@@ -6,12 +6,10 @@ Filenames follow ``case_<patient>_week_<session>_slice_<index>.nii.gz``, so the
 patient a slice belongs to can be recovered from its name. That is what makes the
 leakage check below possible without any extra metadata.
 
-Findings from the data audit that drive the choices here:
-
-* Slices are 256x128 with isotropic 1x1 mm spacing, i.e. a true 2:1 landscape
-  field of view. One scan session (``case_019_week_1``, 60 slices) is 256x144.
-* Intensities are non-negative but the per-slice maximum varies widely
-  (p5 277, median 391, p95 621, max 1082), so normalisation must be per slice.
+Findings from the data audit that affected pipeline decisions:
+* Slices are mostly 256x128, a perfect 2:1 landscape
+  field of view
+* Intensities/brightness are non-negative but the per-slice maximum varies widely, so normalisation must be per slice.
 * No patient appears in more than one split.
 """
 

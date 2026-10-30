@@ -25,7 +25,15 @@ update, so WGAN-GP performs roughly a fifth as many generator steps per epoch
 as the DCGAN baseline. Both generator and head step counts are logged every
 epoch so the comparison in the report can be made on steps as well as epochs.
 
-Scaffolded by Claude Opus 5.5
+References (full entries in the README):
+* WGAN-GP loss, gradient penalty and defaults (lr 1e-4, betas (0, 0.9),
+  n_critic 5, lambda 10): Gulrajani et al. (2017), Algorithm 1.
+* Wasserstein critic: Arjovsky et al. (2017).
+* DCGAN optimiser settings (lr 2e-4, beta1 0.5): Radford et al. (2016),
+  Section 4. beta2 stays at the Adam default of 0.999, which the paper does not
+  change.
+
+Scaffolded and debugged by Claude Opus 5.5
 """
 
 from __future__ import annotations
@@ -154,6 +162,11 @@ def gradient_penalty(
     device: torch.device,
 ) -> torch.Tensor:
     """Gradient penalty enforcing the critic's Lipschitz constraint.
+
+    Penalises (||grad critic(x_hat)||_2 - 1)^2 at random interpolations x_hat
+    between real and fake images, as in Gulrajani et al. (2017), Section 4 and
+    Algorithm 1. The penalty is two-sided, pulling the norm towards 1 rather
+    than only capping it, which is the variant that paper uses.
     """
     batch = real.size(0)
     # One mixing coefficient per image, broadcast over C/H/W so every image in
@@ -185,11 +198,10 @@ def critic_loss(
     gp_lambda: float,
     device: torch.device,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """Wasserstein critic loss plus gradient penalty.
+    """Wasserstein critic loss plus gradient penalty (Gulrajani et al., 2017, Eq. 3).
 
     Returns the loss to backpropagate and a dict of the components for logging:
-    the raw Wasserstein estimate (real score minus fake score) is the number
-    worth watching, since it should trend upward and then plateau.
+    the raw Wasserstein estimate (real score minus fake score).
     """
     real_score = critic(real).mean()
     fake_score = critic(fake).mean()
@@ -215,7 +227,7 @@ def discriminator_loss(
     fake: torch.Tensor,
     criterion: nn.Module,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """Binary cross-entropy loss for the DCGAN baseline.
+    """Binary cross-entropy loss for the DCGAN baseline (Goodfellow et al., 2014, Eq. 1).
 
     Uses BCEWithLogitsLoss against targets. Logs the mean
     predicted probability on each, which is the standard early warning for a
@@ -251,7 +263,8 @@ def generator_loss(
     WGAN-GP maximises the critic's score on fakes. DCGAN uses the non-saturating
     form - the generator maximises log D(fake) rather than minimising
     log(1 - D(fake)) - because the latter has almost no gradient early in
-    training, when the discriminator is winning easily.
+    training, when the discriminator is winning easily (Goodfellow et al.,
+    2014, Section 3).
     """
     scores = head(fake)
     if model == "wgan-gp":
@@ -417,6 +430,8 @@ def save_sample_grid(
     The same seed is used at every epoch, so the grid shows one set of latent
     vectors evolving rather than a fresh draw each time. Fixed seeds and no
     cherry-picking are both required by the specification.
+
+    Claude used for matplot syntax
     """
     import matplotlib
 

@@ -90,8 +90,9 @@ second network and the loss differ between WGAN-GP and DCGAN.*
 
 ## Feasibility Review
 
-*As presented and accepted at the in person review  Two plans changed
-after the review: training moved from Rangpur to a local RTX 3060 Ti (suggested by
+*As presented and accepted at the in person review. The measured values in
+Section 3 were filled in after the review from the data audit and the full
+training runs. Two plans changed after the review: training moved from Rangpur to a local RTX 3060 Ti (suggested by
 the tutor for easy developement), and slices are resized to 64x128 rather than 128x128.*
 
 ### 1. User Need, Scope & Acceptance Criteria
@@ -116,23 +117,27 @@ the tutor for easy developement), and slices are resized to 64x128 rather than 1
 
 #### Model Architecture & Difficulty
 - **Model:** WGAN-GP [Normal difficulty]. Convolutional generator (128-d latent → upsampling blocks → squash with tanh) and critic (strided convs, layer norm, no batch norm, unbounded linear output).
-- **Training:** 5 critic steps per generator step, gradient penalty λ = 10.
-- **Baseline:** DCGAN with the same backbone, using batch norm and BCE loss, so the comparison isolates the effect of the Wasserstein loss.
+- **Training:** 5 critic steps per generator step, gradient penalty λ = 10, the defaults of Gulrajani et al. [3, Algorithm 1].
+- **Baseline:** DCGAN with the same backbone, using batch norm and BCE loss as set out by Radford et al. [1, Secs. 3-4], so the comparison isolates the effect of the Wasserstein loss.
 
 #### Supporting Concepts & Literature
-- GANs and DCGAN (Radford et al., 2016); Wasserstein distance and the Lipschitz critic (Arjovsky et al., 2017); gradient penalty (Gulrajani et al., 2017).
-- Evaluation: SSIM (Wang et al., 2004), FID (Heusel et al., 2017), and nearest-neighbour memorisation audits with latent interpolation.
+- GANs (Goodfellow et al. [7]) and DCGAN (Radford et al. [1]); Wasserstein distance and the Lipschitz critic (Arjovsky et al. [2]); gradient penalty (Gulrajani et al. [3]).
+- Evaluation: SSIM (Wang et al. [4]), FID (Heusel et al. [5]), and nearest-neighbour memorisation audits with latent interpolation.
 
 ### 3. Preliminary Feasibility Evidence
 #### Data Audit
-- Slices per split: [train / validate / test]; patients per split: [ ]; native image size(s): [ ]; intensity range: [ ].
-- Patient overlap between splits: [none found / details].
+- Slices per split: 11,460 train / 660 validate / 540 test, from 31 / 4 / 3 patients (191 / 11 / 9 scan sessions).
+- Native size: 256x128 (height x width) at 1x1 mm spacing; one session (`case_019_week_1`, 60 slices) is 256x144.
+- Intensity: non-negative, with no absolute scale; the per-slice maximum varies widely (p5 277, median 391, p95 621, max 1,082), so normalisation is per slice.
+- Patient overlap between splits: none found. `dataset.check_patient_leakage()` enforces this at the start of every run.
 
 #### Baseline Smoke Test
-- DCGAN trained on MNIST for [ ] epochs, then on a HipMRI subset for [ ] epochs: [losses stable? outputs show pelvic outline?].
+- Both models completed 500-epoch runs on the full HipMRI train split end to end. WGAN-GP losses were stable throughout; the DCGAN discriminator saturated but training did not diverge (see Results).
 
 #### Resource Estimate
-- Parameters: generator, critic; peak VRAM at batch: x GB; time per epoch: x s on GPU and CPU.
+- Parameters: generator 4,852,609; WGAN-GP critic 2,772,673; DCGAN discriminator 2,771,713.
+- Peak VRAM at batch size 64: 1.12 GB (WGAN-GP) and 1.06 GB (DCGAN), well inside the 7.63 GB available.
+- Time on the RTX 3060 Ti: roughly 9-12 s per WGAN-GP epoch, so 500 epochs took ~84 min (DCGAN: 62 min). CPU time was not measured, since all training ran on the GPU.
 
 ### 4. Risks, Budget & Fallback
 #### Key Risks
@@ -407,7 +412,8 @@ same physical scale as every other slice rather than being stretched relative to
 **Intensity.** MRI has no absolute brightness scale, and the audit found
 per-slice maxima varying by roughly 5x across the dataset. Normalisation is therefore **per slice** - a single global
 scale would wash out some slices and clip others. Each slice is rescaled to
-[-1, 1] to match the generator's tanh output; real and generated images must
+[-1, 1] to match the generator's tanh output, the same scaling Radford et al. use
+[1, Sec. 4]; real and generated images must
 occupy the same range or the critic learns to separate them on scale alone.
 
 **Augmentation.** None is applied. Horizontal flipping is superficially
@@ -450,14 +456,19 @@ convergence.** Sample quality continued improving visibly from epoch 25 through
 to epoch 500, long after the curve flattened. The estimate is a
 measurement between two networks improving together, so it settles at an
 equilibrium while absolute quality still rises. Stopping on the curve would have
-discarded most of the model's development. This is a concrete illustration of why
-GANs lack a usable convergence criterion, and why the sample grids rather than
-the loss curves governed the stopping decision.
+discarded most of the model's development. This differs from Gulrajani et al.
+[3, Sec. 5.6], who found the WGAN-GP critic loss followed sample quality and
+converged on LSUN bedrooms; on this dataset it stopped being informative early.
+The sample grids rather than the loss curves therefore governed the stopping decision.
 
 **DCGAN's discriminator saturated.** Confidence drifted from 0.88/0.12 at epoch
 10 to 0.992/0.008 over the final hundred epochs, with several occilations
  before settling. Generator loss rose from 4.3 to 10-17 and grew noisier:
-the generator was being pushed harder while receiving a weaker signal.
+the generator was being pushed harder while receiving a weaker signal. Goodfellow
+et al. [7, Sec. 3] note that a confident discriminator leaves the original
+minimax loss with little gradient, which is why the baseline uses their
+non-saturating generator loss; here even that form was not enough to keep the
+signal useful once the discriminator reached ~99% confidence.
 
 **Held-out score inversions.** On the validate split, the discriminator scored
 unseen real slices as *more fake* than its own generator's output in **412 of 500
@@ -610,18 +621,25 @@ scale; and have a radiologist assess the generated output.
 
 1. A. Radford, L. Metz, and S. Chintala, "Unsupervised representation learning
    with deep convolutional generative adversarial networks," in *Proc. ICLR*, 2016.
+   [Online]. Available: https://arxiv.org/abs/1511.06434
 2. M. Arjovsky, S. Chintala, and L. Bottou, "Wasserstein generative adversarial
-   networks," in *Proc. ICML*, 2017, pp. 214-223.
+   networks," in *Proc. ICML*, 2017, pp. 214-223. [Online]. Available:
+   https://proceedings.mlr.press/v70/arjovsky17a.html
 3. I. Gulrajani, F. Ahmed, M. Arjovsky, V. Dumoulin, and A. Courville, "Improved
-   training of Wasserstein GANs," in *Proc. NeurIPS*, 2017.
+   training of Wasserstein GANs," in *Proc. NeurIPS*, 2017. [Online]. Available:
+   https://arxiv.org/abs/1704.00028
 4. Z. Wang, A. C. Bovik, H. R. Sheikh, and E. P. Simoncelli, "Image quality
    assessment: from error visibility to structural similarity," *IEEE Trans.
-   Image Processing*, vol. 13, no. 4, pp. 600-612, 2004.
+   Image Processing*, vol. 13, no. 4, pp. 600-612, 2004,
+   doi: 10.1109/TIP.2003.819861.
 5. M. Heusel, H. Ramsauer, T. Unterthiner, B. Nessler, and S. Hochreiter, "GANs
    trained by a two time-scale update rule converge to a local Nash equilibrium,"
-   in *Proc. NeurIPS*, 2017.
+   in *Proc. NeurIPS*, 2017. [Online]. Available: https://arxiv.org/abs/1706.08500
 6. A. Odena, V. Dumoulin, and C. Olah, "Deconvolution and checkerboard artifacts,"
-   *Distill*, 2016.
+   *Distill*, 2016, accessed from https://distill.pub/2016/deconv-checkerboard/
+7. I. Goodfellow, J. Pouget-Abadie, M. Mirza, B. Xu, D. Warde-Farley, S. Ozair,
+   A. Courville, and Y. Bengio, "Generative adversarial nets," in *Proc. NeurIPS*,
+   2014. [Online]. Available: https://arxiv.org/abs/1406.2661
 
 ## Artificial Intelligence Usage Disclosure
 
@@ -648,6 +666,7 @@ Claude (Claude Opus 5.5) was used throughout this project to streamline and educ
   (Wasserstein distance, the Lipschitz constraint, normalisation variants, latent
   space, and the behaviour of SSIM), which informed the analysis in this report.
 - **Report drafting.** Claude drafted sections of this README, such as the pipeline diagram and the Usage section. It also suggested n_critic = 5, λ = 10 and the later scrapped Apple M4 benchmark from the feasibility review; the goal of running on my own hardware was mine. Everything written or suggested was reviewed and edited by me.
+- **Source finding**. Outside of the papers referenced in the task spec I had claude search and recommend more for me to read. I wne through and judge if they were relevant.
 
 **Not used for:**
 

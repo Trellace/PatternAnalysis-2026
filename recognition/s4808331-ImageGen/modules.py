@@ -2,18 +2,18 @@
 
 Three networks live here:
 
-* :class:`Generator` -- shared by both models. Maps a 128-d vector to a
+* class:`Generator` - shared by both models. Maps a 128-d vector to a
   single-channel 64x128 slice with a ``tanh`` output.
-* :class:`Critic` -- the WGAN-GP critic. No batch normalisation, unbounded
+* class:`Critic` - the WGAN-GP critic. No batch normalisation, unbounded
   scalar output.
-* :class:`Discriminator` -- the DCGAN baseline. Batch normalisation, single
+* class:`Discriminator` - the DCGAN baseline. Batch normalisation, single
   logit for binary cross-entropy.
 
 The generator is deliberately identical for both models so that the comparison
 between them isolates the effect of the loss function rather than mixing it
 with pipeline differences.
 
-Spatial sizes follow the data: slices are 64x128 (see dataset.py), so the
+Sizes follow the data: slices are 64x128 (see dataset.py), so the
 generator starts from a 4x8 feature map and doubles four times
 (4x8 -> 8x16 -> 16x32 -> 32x64 -> 64x128) instead of the square 4x4 seed used in
 most DCGAN references.
@@ -65,11 +65,13 @@ def seed_size(image_size: tuple[int, int] = IMAGE_SIZE, n_blocks: int = N_BLOCKS
 
 
 def weights_init(module: nn.Module) -> None:
-    """DCGAN weight initialisation (Radford et al., 2016, Section 4).
+    """DCGAN weight initialisation.
 
-    Convolutions start from a normal distribution with standard deviation 0.02
-    and normalisation layers from a mean of 1. GANs are sensitive to the
-    starting point: default PyTorch initialisation tends to make the critic win
+    Convolutions start from a zero-mean normal distribution with standard
+    deviation 0.02, as in Radford et al. (2016), Section 4. Normalisation
+    weights start from a mean of 1, the paper did not spcifically say this, so it
+    follows common PyTorch DCGAN practice. GANs are sensitive to the
+    starting point, default PyTorch initialisation tends to make the critic win
     too early, which starves the generator of useful gradients.
 
     Apply with ``model.apply(weights_init)``.
@@ -100,8 +102,8 @@ def _critic_norm(kind: str, channels: int) -> nn.Module:
     Batch normalisation is invalid in a WGAN-GP critic: the gradient penalty is
     defined per sample, but batch norm makes each output depend on the rest of
     the batch, so the penalty no longer constrains what it is meant to
-    (Gulrajani et al., 2017, Section 4). Layer normalisation is the recommended
-    substitute and is implemented here as ``GroupNorm`` with a single group,
+    (Gulrajani et al., 2017, Section 4). Layer normalisation is the substitute
+    that paper recommends, and is implemented here as ``GroupNorm`` with a single group,
     which normalises over channels and space without needing the spatial size
     declared up front.
     """
@@ -125,7 +127,10 @@ class Generator(nn.Module):
     The latent vector is projected to a small, deep feature map and then
     repeatedly doubled in resolution while thinning in channels, until it
     reaches the image size. ``tanh`` puts the output in [-1, 1], matching the
-    normalisation applied in ``dataset.py``.
+    normalisation applied in ``dataset.py``. The layout (projected seed,
+    fractionally-strided convolutions, batch norm and ReLU, ``tanh`` output with
+    no norm before it) follows the DCGAN guidelines in Radford et al. (2016),
+    Section 3.
 
     Scaffolded and debugged by Claude
 
@@ -141,7 +146,7 @@ class Generator(nn.Module):
             convolutions can leave periodic checkerboard artifacts; the
             ``"nearest"`` variant is the standard remedy and is kept available
             so the failure autopsy can test that explanation rather than
-            assert it.
+            assert it (Odena et al., 2016).
     """
 
     def __init__(
@@ -243,10 +248,11 @@ class Critic(nn.Module):
 
     This is not a classifier. It estimates the Wasserstein distance between the
     real and generated distributions, so the output has no sigmoid and no fixed
-    range -- only the *difference* between its scores on real and fake batches
+    range -- only the difference between its scores on real and fake batches
     is meaningful. Keeping it unbounded is what gives the generator a usable
     gradient even when the two distributions do not overlap, which is the
-    failure mode that makes normal GAN training collapse.
+    failure mode that makes normal GAN training collapse (Arjovsky et al.,
+    2017). The no-batch-norm design follows Gulrajani et al. (2017).
 
     Args:
         image_size: Input size as (height, width).
@@ -272,8 +278,8 @@ class Critic(nn.Module):
 
         channels = [base_channels * 2**i for i in range(n_blocks)]
 
-        # First stage takes the image. No normalisation on the input layer, as
-        # in the DCGAN reference design.
+        # First stage takes the image. No normalisation on the input layer, and
+        # LeakyReLU with slope 0.2, as in Radford et al. (2016), Sections 3-4.
         layers: list[nn.Module] = [
             nn.Conv2d(in_channels, channels[0], kernel_size=4, stride=2, padding=1),
             nn.LeakyReLU(0.2, inplace=True),

@@ -271,7 +271,10 @@ def measure_generation_throughput(
 
 
 def _ssim_pairs(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    """SSIM for matched pairs: a[i] against b[i]. Returns one score per pair."""
+    """SSIM for matched pairs: a[i] against b[i]. Returns one score per pair.
+
+    SSIM is Wang et al. (2004), computed with torchmetrics' implementation.
+    """
     return _ssim(a, b, data_range=DATA_RANGE, reduction="none").flatten()
 
 
@@ -427,6 +430,8 @@ def compute_fid(
     batch_size: int = 64,
 ) -> float:
     """Frechet Inception Distance between generated and real images.
+
+    FID is Heusel et al. (2017), computed with torchmetrics' implementation.
 
     Inception expects three channels at 299x299, so the single-channel slices
     are repeated across channels and resized. FID is biased at small sample
