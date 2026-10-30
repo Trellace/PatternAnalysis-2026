@@ -382,8 +382,7 @@ this report.
 
 Patient-level separation matters more here than slice counts suggest. The 31
 training patients produced 191 separate scan sessions, and neighbouring slices
-within one session are near-duplicates - measured SSIM between adjacent slices of
-one session is 0.91. A single patient spanning two splits would mean the model
+within one session are near-duplicates of each other. A single patient spanning two splits would mean the model
 being evaluated on anatomy it had already seen, and would make the memorisation
 audit meaningless.
 
@@ -439,7 +438,7 @@ with fixed seeds, so every number is reproducible from the committed code.
 | Wall-clock | 84.5 min | 61.2 min |
 | Peak VRAM during training | 1.18 GB | 1.06 GB |
 
-Both models see identical data and take identical numbers of head updates. They
+Both models see identical data and take a very similar number of head updates. They
 differ in generator updates because WGAN-GP takes a critic step on every batch
 but a generator step on only every fifth. This is reported explicitly because it is the single largest
 confound in any epoch-matched GAN comparison.
@@ -451,11 +450,10 @@ WGAN-GP trained without any instability events. The Wasserstein estimate
 fell from 79.9 to a plateau by epoch 15 and stayed within 9.37-11.43 (mean
 10.80) for the remaining 485 epochs; the gradient penalty settled in the range
 0.157-0.253 (mean 0.223), confirming the Lipschitz constraint held throughout.
-Measured as epoch-to-epoch volatility, the Wasserstein estimate produced 9 jumps
-exceeding five times its median change across 500 epochs, against 111 such jumps
-in the DCGAN discriminator loss.
+The Wasserstein curve is also visibly smoother from epoch to epoch than the
+DCGAN discriminator loss.
 
-One of the finding is the Wasserstein plateau did not indicate
+One of the findings is that the Wasserstein plateau did not indicate
 convergence. Sample quality continued improving visibly from epoch 25 through
 to epoch 500, long after the curve flattened. The estimate is a
 measurement between two networks improving together, so it settles at an
@@ -517,9 +515,9 @@ has seen - were scored against the same test reference by the same procedure.
 They reach a mean of only **0.3147**.
 
 The cause is that SSIM compares fixed pixel positions with no alignment search,
-and these slices are not spatially registered: shifting one slice by two pixels
-against itself drops SSIM from 1.00 to 0.38, roughly the score of two genuinely
-different slices from one patient. Exceeding 0.6 therefore requires
+and these slices are not spatially registered: because SSIM is computed over
+small local windows [4], even a shift of a few pixels between two otherwise
+identical slices lowers the score sharply. Exceeding 0.6 therefore requires
 near-pixel-exact reproduction of a reference slice, which is what AC3 exists to
 forbid. AC1 and AC3 are in direct tension, and it is the threshold rather than
 the model that fails here.
@@ -608,8 +606,8 @@ The evidence supporting release is substantive. The generated distribution is at
 least as diverse as the real one (AC2), average novelty is close to that of
 genuinely unseen patient data (AC3), latent interpolation is smooth and
 continuous, and no generated slice approaches the memorisation threshold. The
-model trained stably across 500 epochs without a single instability event, and
-its critic showed no sign of overfitting to the training split.
+model trained stably across 500 epochs without a one single moment of immediate instability, 
+instead everything being gradual.
 
 First, fidelity is passable but not high, an FID of 85.6 against the training
 reference is well ahead of the baseline, but the samples are recognisably
