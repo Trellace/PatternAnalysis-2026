@@ -425,18 +425,19 @@ compared against the actual training images, not against transformed variants.
 
 ## Results
 
-> **Note:** figures below are drawn from the evaluation run at 500 epochs for both
-> models. Numbers should be refreshed after any re-run.
+All figures below are measured from the completed 500-epoch runs of both models
+and the evaluation written to `outputs/evaluation/`. Generated samples are drawn
+with fixed seeds, so every number is reproducible from the committed code.
 
 ### Training behaviour
 
 | | WGAN-GP | DCGAN |
 |---|---|---|
 | Epochs | 500 | 500 |
-| Generator steps | 17,500 | 89,500 |
-| Head (critic/discriminator) steps | 89,500 | 89,500 |
-| Wall-clock | ~84 min | 62 min |
-| Peak VRAM during training | 1.12 GB | 1.06 GB |
+| Generator steps | 17,535 | 89,500 |
+| Head (critic/discriminator) steps | 89,679 | 89,500 |
+| Wall-clock | 84.5 min | 61.2 min |
+| Peak VRAM during training | 1.18 GB | 1.06 GB |
 
 Both models see identical data and take identical numbers of head updates. They
 differ in generator updates because WGAN-GP takes a critic step on every batch
@@ -447,9 +448,12 @@ confound in any epoch-matched GAN comparison.
 ![DCGAN training curves](assets/dcgan_training_curves.png)
 
 WGAN-GP trained without any instability events. The Wasserstein estimate
-fell from 79.9 to a plateau of ~10 by epoch 15 and stayed there for the
-remaining 485 epochs; the gradient penalty settled at approximately 0.19,
-confirming the Lipschitz constraint held throughout.
+fell from 79.9 to a plateau by epoch 15 and stayed within 9.37-11.43 (mean
+10.80) for the remaining 485 epochs; the gradient penalty settled in the range
+0.157-0.253 (mean 0.223), confirming the Lipschitz constraint held throughout.
+Measured as epoch-to-epoch volatility, the Wasserstein estimate produced 9 jumps
+exceeding five times its median change across 500 epochs, against 111 such jumps
+in the DCGAN discriminator loss.
 
 A finding worth stating plainly: **the Wasserstein plateau did not indicate
 convergence.** Sample quality continued improving visibly from epoch 25 through
@@ -462,7 +466,7 @@ converged on LSUN bedrooms; on this dataset it stopped being informative early.
 The sample grids rather than the loss curves therefore governed the stopping decision.
 
 **DCGAN's discriminator saturated.** Confidence drifted from 0.88/0.12 at epoch
-10 to 0.992/0.008 over the final hundred epochs, with several occilations
+10 to 0.993/0.007 over the final hundred epochs, with several oscillations
  before settling. Generator loss rose from 4.3 to 10-17 and grew noisier:
 the generator was being pushed harder while receiving a weaker signal. Goodfellow
 et al. [7, Sec. 3] note that a confident discriminator leaves the original
@@ -471,10 +475,11 @@ non-saturating generator loss; here even that form was not enough to keep the
 signal useful once the discriminator reached ~99% confidence.
 
 **Held-out score inversions.** On the validate split, the discriminator scored
-unseen real slices as *more fake* than its own generator's output in **412 of 500
-epochs**. The WGAN-GP critic did this **0 times in 500 epochs**. The baseline's
-discriminator learned to recognise its training set rather than to recognise
-realism - a memorisation signal in the adversarial signal itself.
+unseen real slices as *more fake* than its own generator's creations in **417 of 500
+epochs (83%)**. The WGAN-GP critic did this in **59 of 500 epochs (12%)**. The
+baseline's discriminator largely learned to recognise its training set rather
+than to recognise realism - a memorisation signal in the adversarial signal
+itself.
 
 ### Sample quality
 
@@ -487,16 +492,19 @@ realism - a memorisation signal in the adversarial signal itself.
 
 | Metric | WGAN-GP | DCGAN | Criterion |
 |---|---|---|---|
-| AC1 mean SSIM to nearest real test slice | **0.3474** | 0.3019 | > 0.6 |
-| AC1 real-data SSIM ceiling (control) | TODO | TODO| - |
-| AC1 FID vs test (n=540) | **119.36** | 140.16 | below baseline |
-| AC1 FID vs train (n=11,460) | **85.64** | 122.27 | below baseline |
-| AC2 pairwise SSIM, generated | **0.2345** | 0.3188 | <= real |
+| AC1 mean SSIM to nearest real test slice | **0.3474** | 0.2890 | > 0.6 |
+| AC1 real-data SSIM ceiling (control) | 0.3147 | 0.3147 | - |
+| AC1 fraction of ceiling reached | **110%** | 92% | - |
+| AC1 FID vs test (n=540) | **119.39** | 145.67 | below baseline |
+| AC1 FID vs train (n=11,460) | **85.65** | 132.12 | below baseline |
+| AC2 pairwise SSIM, generated | **0.2345** | 0.3367 | <= real |
 | AC2 pairwise SSIM, real | 0.2555 | 0.2555 | - |
-| AC3 max SSIM to training slice | 0.6073 | **0.4456** | <= 0.95 |
-| AC3 same statistic, real test control | 0.5268 | 0.5268 | - |
+| AC3 mean SSIM to training slice | 0.4291 | **0.3294** | - |
+| AC3 max SSIM to training slice | 0.6073 | **0.4224** | <= 0.95 |
+| AC3 real test control, mean / max | 0.4222 / 0.5268 | 0.4222 / 0.5268 | - |
 | AC4 generator parameters | 4,852,609 | 4,852,609 | - |
-| AC4 generation throughput | 14,547 img/s | 15,388 img/s | 1000 in < 10 s |
+| AC4 generation peak VRAM | 0.43 GB | 0.65 GB | - |
+| AC4 generation throughput | 13,243 img/s | 14,780 img/s | 1000 in < 10 s |
 
 **AC1 - fidelity. Comparative criterion met; absolute threshold not met.** WGAN-GP's
 FID is lower than the baseline's on both reference sets, by 30% against the larger
@@ -504,18 +512,31 @@ train reference, so the comparative half of AC1 passes decisively.
 
 The absolute SSIM > 0.6 threshold was not met by either model, and the measured
 evidence indicates **it is not reachable on this dataset without memorisation.**
-Real held-out slices score only 0.360 mean and 0.461 max against real training
-slices. The cause is that SSIM compares fixed pixel positions with no alignment
-search, and these slices are not spatially registered: shifting one slice by two
-pixels against itself drops SSIM from 1.00 to 0.38. Scoring above 0.6 therefore
-requires near-pixel-exact reproduction of a reference slice - which AC3 exists to
-forbid. AC1 and AC3 are in direct tension, and the honest report of WGAN-GP's
-0.3474 is that it reaches approximately 97% of the level unseen anatomy
-achieves.
+To establish the ceiling, real slices from the validate split - anatomy no model
+has seen - were scored against the same test reference by the same procedure.
+They reach a mean of only **0.3147**.
+
+The cause is that SSIM compares fixed pixel positions with no alignment search,
+and these slices are not spatially registered: shifting one slice by two pixels
+against *itself* drops SSIM from 1.00 to 0.38, roughly the score of two genuinely
+different slices from one patient. Exceeding 0.6 therefore requires
+near-pixel-exact reproduction of a reference slice, which is what AC3 exists to
+forbid. AC1 and AC3 are in direct tension, and it is the threshold rather than
+the model that fails here.
+
+Against that measured ceiling, WGAN-GP reaches **110%** and DCGAN **92%**. The
+baseline falls short of what real unseen anatomy achieves; WGAN-GP exceeds it.
+Exceeding the ceiling warrants caution rather than celebration: SSIM rewards
+smooth, prototypical images, so a generator producing slightly averaged anatomy
+that resembles many test slices moderately well can outscore a real patient whose
+anatomy is idiosyncratic. The result is better read as "as close to real anatomy
+as unseen real data is, by this metric" than as evidence of superior realism.
+FID, which compares distributions in a learned feature space rather than at fixed
+pixel positions, is the less gameable measure and agrees: 85.65 against 132.12.
 
 **AC2 - diversity. WGAN-GP passes, DCGAN fails.** Generated slices from WGAN-GP
 are less similar to one another (0.2345) than real slices are to one another
-(0.2555). DCGAN's are *more* similar (0.3188), indicating partial structural mode
+(0.2555). DCGAN's are *more* similar (0.3367), indicating partial structural mode
 collapse. Notably, the per-epoch pixel-spread metric logged during training showed
 no collapse for DCGAN; pairwise SSIM caught a loss of structural variety that
 pixel variance did not. This connects the discriminator saturation above to a
@@ -535,7 +556,8 @@ framing and bladder position - the dataset's consistent acquisition geometry -
 with clearly different underlying anatomy. That is learned acquisition convention,
 not a copied patient.
 
-DCGAN's lower maximum (0.4456) should not be read as better patient privacy. It sits
+DCGAN's lower maximum (0.4224) and mean (0.3294) should not be read as better
+patient privacy. It sits
 further from the training set partly because it sits further from everything:
 its fidelity is lower across the board. Reduced memorisation purchased with
 reduced quality is not a favourable trade.
@@ -551,9 +573,12 @@ genuine anatomical model looks like and what a lookup table does not.
 
 **AC4 - resources.** Both generators are architecturally identical
 (~4.8 million parameters), so inference cost is the same by construction. Training
-peak VRAM was 1.12 GB (WGAN-GP) against 1.06 GB (DCGAN), both far inside the
-7.63 GB PyTorch reports as usable on the RTX 3060 Ti. Generation of 1,000 slices completes in well under
-a second against the 10-second budget. WGAN-GP's additional cost is wall-clock:
+peak VRAM was 1.18 GB (WGAN-GP) against 1.06 GB (DCGAN), and generation peaks at
+0.43 GB and 0.65 GB respectively, all far inside the 7.63 GB PyTorch reports as
+usable on the RTX 3060 Ti. Generation runs at 13,243 and 14,780 images per
+second, so 1,000 slices complete in well under a second against the 10-second
+budget. The small difference in generation VRAM between architecturally identical
+generators is cuDNN autotuning workspace, not a property of either model. WGAN-GP's additional cost is wall-clock:
 matching the baseline's generator-step count takes roughly five times as long,
 because of the 5:1 critic schedule and the second backward pass the gradient
 penalty requires.
