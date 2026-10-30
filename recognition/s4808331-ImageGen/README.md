@@ -16,7 +16,7 @@ in which case sharing the synthetic cohort is a confidentiality breach wearing a
 disguise. Optimising hard for realism pushes a model toward the third failure.
 
 This project trains a **WGAN-GP** on 2D coronal pelvic MRI slices from the HipMRI
-study and measures where it lands on that trade-off, against a **DCGAN** baseline
+study [8] and measures where it lands on that trade-off, against a **DCGAN** baseline
 trained on identical data with an identical generator.
 
 ## How It Works
@@ -136,8 +136,8 @@ the tutor for easy developement), and slices are resized to 64x128 rather than 1
 
 #### Resource Estimate
 - Parameters: generator 4,852,609; WGAN-GP critic 2,772,673; DCGAN discriminator 2,771,713.
-- Peak VRAM at batch size 64: 1.12 GB (WGAN-GP) and 1.06 GB (DCGAN), well inside the 7.63 GB available.
-- Time on the RTX 3060 Ti: roughly 9-12 s per WGAN-GP epoch, so 500 epochs took ~84 min (DCGAN: 62 min). CPU time was not measured, since all training ran on the GPU.
+- Peak VRAM at batch size 64: 1.18 GB (WGAN-GP) and 1.06 GB (DCGAN), well inside the 7.63 GB available.
+- Time on the RTX 3060 Ti: roughly 9-12 s per WGAN-GP epoch, so 500 epochs took 84.5 min (DCGAN: 61.2 min). CPU time was not measured, since all training ran on the GPU.
 
 ### 4. Risks, Budget & Fallback
 #### Key Risks
@@ -313,7 +313,7 @@ Run `python train.py --help` for the full list.
 ### Measured cost
 
 On an RTX 3060 Ti at the default batch size of 64, WGAN-GP runs at roughly
-9-12 seconds/epoch with a peak allocation of 1.12 GB, so a 100-epoch run takes about
+9-12 seconds/epoch with a peak allocation of 1.18 GB, so a 100-epoch run takes about
 17 minutes. DCGAN is faster per epoch, having no gradient penalty and one generator pass.
 
 ### 5. Evaluate
@@ -416,9 +416,9 @@ scale would wash out some slices and clip others. Each slice is rescaled to
 [1, Sec. 4]; real and generated images must
 occupy the same range or the critic learns to separate them on scale alone.
 
-**Augmentation.** None is applied. Horizontal flipping is superficially
-attractive given the approximate left-right symmetry of pelvic anatomy, but it is
-not anatomically free - situs anomalies exist and organ asymmetry is real - and
+No augmentation was applied. Horizontal flipping was worth considering at a surface level given the 
+approximate left-right symmetry of pelvic anatomy, but it is
+not anatomically free - anomalies exist and organ asymmetry is real - and
 with 11,460 training slices the data budget did not require it. Declining to
 augment also keeps the memorisation audit clean: every generated slice is
 compared against the actual training images, not against transformed variants.
@@ -455,8 +455,8 @@ Measured as epoch-to-epoch volatility, the Wasserstein estimate produced 9 jumps
 exceeding five times its median change across 500 epochs, against 111 such jumps
 in the DCGAN discriminator loss.
 
-A finding worth stating plainly: **the Wasserstein plateau did not indicate
-convergence.** Sample quality continued improving visibly from epoch 25 through
+One of the finding is the Wasserstein plateau did not indicate
+convergence. Sample quality continued improving visibly from epoch 25 through
 to epoch 500, long after the curve flattened. The estimate is a
 measurement between two networks improving together, so it settles at an
 equilibrium while absolute quality still rises. Stopping on the curve would have
@@ -465,9 +465,9 @@ discarded most of the model's development. This differs from Gulrajani et al.
 converged on LSUN bedrooms; on this dataset it stopped being informative early.
 The sample grids rather than the loss curves therefore governed the stopping decision.
 
-**DCGAN's discriminator saturated.** Confidence drifted from 0.88/0.12 at epoch
+DCGAN's discriminator saturated. Confidence drifted from 0.88/0.12 at epoch
 10 to 0.993/0.007 over the final hundred epochs, with several oscillations
- before settling. Generator loss rose from 4.3 to 10-17 and grew noisier:
+before settling. Generator loss rose from 4.3 to 10-17 and grew noisier:
 the generator was being pushed harder while receiving a weaker signal. Goodfellow
 et al. [7, Sec. 3] note that a confident discriminator leaves the original
 minimax loss with little gradient, which is why the baseline uses their
@@ -507,7 +507,7 @@ itself.
 | AC4 generation throughput | 13,243 img/s | 14,780 img/s | 1000 in < 10 s |
 
 **AC1 - fidelity. Comparative criterion met; absolute threshold not met.** WGAN-GP's
-FID is lower than the baseline's on both reference sets, by 30% against the larger
+FID is lower than the baseline's on both reference sets, by 35% against the larger
 train reference, so the comparative half of AC1 passes decisively.
 
 The absolute SSIM > 0.6 threshold was not met by either model, and the measured
@@ -518,7 +518,7 @@ They reach a mean of only **0.3147**.
 
 The cause is that SSIM compares fixed pixel positions with no alignment search,
 and these slices are not spatially registered: shifting one slice by two pixels
-against *itself* drops SSIM from 1.00 to 0.38, roughly the score of two genuinely
+against itself drops SSIM from 1.00 to 0.38, roughly the score of two genuinely
 different slices from one patient. Exceeding 0.6 therefore requires
 near-pixel-exact reproduction of a reference slice, which is what AC3 exists to
 forbid. AC1 and AC3 are in direct tension, and it is the threshold rather than
@@ -577,8 +577,8 @@ peak VRAM was 1.18 GB (WGAN-GP) against 1.06 GB (DCGAN), and generation peaks at
 0.43 GB and 0.65 GB respectively, all far inside the 7.63 GB PyTorch reports as
 usable on the RTX 3060 Ti. Generation runs at 13,243 and 14,780 images per
 second, so 1,000 slices complete in well under a second against the 10-second
-budget. The small difference in generation VRAM between architecturally identical
-generators is cuDNN autotuning workspace, not a property of either model. WGAN-GP's additional cost is wall-clock:
+budget. The small difference in VRAM between architecturally identical
+generators is likely the workspace autotuning, not a property of either model. WGAN-GP's additional cost is wall-clock:
 matching the baseline's generator-step count takes roughly five times as long,
 because of the 5:1 critic schedule and the second backward pass the gradient
 penalty requires.
@@ -601,7 +601,7 @@ All five successfully showed the torso body outline, but struggled with unclear 
 
 ## Recommendation
 
-**To the project manager: the WGAN-GP cohort is suitable for downstream
+**To the project manager: the WGAN-GP pipeline is suitable for downstream
 augmentation, with conditions. It is not yet suitable for unrestricted release.**
 
 The evidence supporting release is substantive. The generated distribution is at
@@ -611,16 +611,14 @@ continuous, and no generated slice approaches the memorisation threshold. The
 model trained stably across 500 epochs without a single instability event, and
 its critic showed no sign of overfitting to the training split.
 
-Three conditions qualify that verdict.
-
-**First, fidelity is passable but not high.** FID of 85.6 against the training
+First, fidelity is passable but not high, an FID of 85.6 against the training
 reference is well ahead of the baseline, but the samples are recognisably
-synthetic: tissue margins are softer than real acquisitions and fine texture is
+fake: tissue margins are softer than real acquisitions and fine texture is
 not faithfully reproduced. These slices are suitable for augmenting a real
 training set, not for replacing one, and they should not be used for any task
 depending on fine-grained texture.
 
-**Second, the evidence base is thin.** The training set comprises only 31 patients.
+Second, the evidence base is thin as the training set comprises only 31 patients.
 Diversity and novelty are measured relative to that selection, and nothing in this
 evaluation establishes that the model extends to anatomy different from
 theirs. Any claim about coverage is bounded by those patients.
@@ -631,9 +629,9 @@ inspected cases are explicable as shared acquisition geometry rather than copyin
 but that conclusion rests on visual inspection of a handful of pairs. A release
 decision warrants a systematic audit across a larger sample.
 
-**The baseline should not be used.** Beyond losing on fidelity and failing the
-diversity criterion, its discriminator scored unseen real data as more fake than
-its own output in 82% of training epochs - it learned to recognise its training
+The baseline should not be used. Beyond losing on fidelity and failing the
+diversity targets, its discriminator scored unseen real data as more fake than
+its own output in 83% of training epochs - it learned to recognise its training
 set rather than realism. That is a memorisation signature in the training
 process, and it is the specific failure mode that makes generated medical data
 unsafe to share.
@@ -665,6 +663,8 @@ scale; and have a radiologist assess the generated output.
 7. I. Goodfellow, J. Pouget-Abadie, M. Mirza, B. Xu, D. Warde-Farley, S. Ozair,
    A. Courville, and Y. Bengio, "Generative adversarial nets," in *Proc. NeurIPS*,
    2014. [Online]. Available: https://arxiv.org/abs/1406.2661
+8. J. Dowling and P. Greer, "Labelled weekly MR images of the male pelvis,"
+   CSIRO Data Collection, v2, 2021, doi: 10.25919/45t8-p065.
 
 ## Artificial Intelligence Usage Disclosure
 
@@ -690,8 +690,9 @@ Claude (Claude Opus 5.5) was used throughout this project to streamline and educ
 - **Explanation.** I used Claude extensively to understand GAN concepts and other necessary theory
   (Wasserstein distance, the Lipschitz constraint, normalisation variants, latent
   space, and the behaviour of SSIM), which informed the analysis in this report.
-- **Report drafting.** Claude drafted sections of this README, such as the pipeline diagram and the Usage section. It also suggested n_critic = 5, λ = 10 and the later scrapped Apple M4 benchmark from the feasibility review; the goal of running on my own hardware was mine. Everything written or suggested was reviewed and edited by me.
-- **Source finding**. Outside of the papers referenced in the task spec I had claude search and recommend more for me to read. I wne through and judge if they were relevant.
+- **Report drafting.** Claude drafted a scaffold for each of the sections of this README, such as the pipeline diagram and the Usage section. It also suggested n_critic = 5, λ = 10 and the Apple M4 benmark I later scrapped; the goal of running on my own hardware was mine but ultimately irrelevant. Everything written or suggested was reviewed and edited by me.
+- **Source finding**. Outside of the papers referenced in the task spec I had Claude search and recommend more for me to read. I went through them and judged whether they were relevant.
+- Quick summarising and plotting of history data such as finding min and maxs, mean and medians for me to be able to write the commentary on then
 
 **Not used for:**
 
@@ -701,4 +702,4 @@ Claude (Claude Opus 5.5) was used throughout this project to streamline and educ
 - Producing results: All numbers in this report are measured outputs from the code in this directory.
 
 Components with **heavy AI usage** are marked inline in the source files where Claude
-authored, reworte or scaffolded a method or class.
+authored, rewrote or scaffolded a method or class.

@@ -11,6 +11,8 @@ Findings from the data audit that affected pipeline decisions:
   field of view
 * Intensities/brightness are non-negative but the per-slice maximum varies widely, so normalisation must be per slice.
 * No patient appears in more than one split.
+
+Datasets are the keras slices from the UQ Rangpur server
 """
 
 from __future__ import annotations
